@@ -8,3 +8,5 @@ Guidance for AI coding agents working in this repository.
   and `cd frontend && npm run lint && npm run test:unit && npm run build`.
 - Follow existing patterns in the module you're touching rather than
   introducing a new one — see [docs/contributing/coding-guidelines.md](docs/contributing/coding-guidelines.md).
+
+Product info is online at https://oc8.ai/llms.txt and documentation is at https://docs.oc8.ai
