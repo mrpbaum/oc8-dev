@@ -161,6 +161,8 @@ services:
     # when both are candidates) leaves the TTL-less run-intake stream
     # untouched, trading an occasional dropped login state (the user retries)
     # for never blocking a run.
+    volumes:
+      - oc8-redis-data:/data
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-ttl"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -436,6 +438,7 @@ services:
 
 networks:
   default:
+    name: oc8
   # Where agent containers live. `internal` means no route off the host: they can
   # reach the control plane (which sits on both networks) and NOTHING else --
   # not the database, not the internet. The container is meant to think and act
@@ -450,3 +453,4 @@ volumes:
   oc8-caddy-config:
   oc8-ollama:
   oc8-miniodata:
+  oc8-redis-data:

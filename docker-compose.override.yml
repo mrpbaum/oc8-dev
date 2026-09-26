@@ -1,0 +1,24 @@
+# Local override: expose oc8 over HTTP only.
+# This avoids reserving host port 443 when OC8_DOMAIN is empty/Tailscale handles access.
+services:
+  caddy:
+    container_name: oc8-caddy
+    networks:
+      default:
+      caddy-hs:
+        aliases:
+          - oc8-caddy
+    ports: !reset []
+    expose: 
+      - 80
+    labels:
+       caddy: oc8.hs
+       caddy.tls: internal
+       caddy.reverse_proxy: "oc8-caddy:80"
+
+    
+networks:
+  default:
+    name: oc8
+  caddy-hs:
+    external: true
