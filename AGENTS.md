@@ -9,4 +9,6 @@ Guidance for AI coding agents working in this repository.
 - Follow existing patterns in the module you're touching rather than
   introducing a new one — see [docs/contributing/coding-guidelines.md](docs/contributing/coding-guidelines.md).
 
-Product info is online at https://oc8.ai/llms.txt. Published documentation is at https://docs.oc8.ai, but when working in this repo prefer the local docs under `docs/`.
+Use the project skill `repomix` for generated repository context when researching architecture, file locations, or cross-cutting changes.
+
+Product info is online at https://oc8.ai/llms.txt. Published documentation is at https://docs.oc8.ai.

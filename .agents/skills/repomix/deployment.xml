@@ -1,0 +1,2862 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files and files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: docker-compose*.yml, .env.example, scripts/quickstart.sh, docs/DEPLOY.md, docs/GETTING_STARTED.md, deploy/helm/**, backend/docker/**
+- Files matching these patterns are excluded: backend/uv.lock, backend/.venv/**, frontend/node_modules/**, frontend/dist/**, frontend/src/routeTree.gen.ts, frontend/public/**, i18n/**, **/*lock*, **/*.svg, **/*.png, **/*.gif, **/*.po, backend/migrations/**, backend/tests/**, frontend/src/test/**, demo/**, .agents/skills/repomix/**
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+backend/
+  docker/
+    init-db.sql
+deploy/
+  helm/
+    oc8/
+      templates/
+        _helpers.tpl
+        backend-deployment.yaml
+        caddy-deployment.yaml
+        frontend-deployment.yaml
+        ingestion-worker-deployment.yaml
+        ingress.yaml
+        NOTES.txt
+        ollama-statefulset.yaml
+        postgres-init-configmap.yaml
+        postgres-statefulset.yaml
+        redis-deployment.yaml
+        scheduler-deployment.yaml
+        secret.yaml
+        serviceaccount.yaml
+        sessions-pvc.yaml
+        worker-deployment.yaml
+      .helmignore
+      Chart.yaml
+      ci.values.yaml
+      README.md
+      values.yaml
+    README.md
+docs/
+  DEPLOY.md
+  GETTING_STARTED.md
+scripts/
+  quickstart.sh
+.env.example
+docker-compose.demo.yml
+docker-compose.dev.yml
+docker-compose.override.yml
+docker-compose.yml
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="backend/docker/init-db.sql">
+-- Runs once on first cluster init (as the postgres superuser, against DB "oc8").
+-- Sets up the two-role model required by the tenancy design (tech-spec ADR-002):
+--   oc8_migrate — owns the schema, runs migrations (DDL).
+--   oc8_app     — the runtime role; NO BYPASSRLS, so RLS policies always apply.
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'oc8_migrate') THEN
+    CREATE ROLE oc8_migrate LOGIN PASSWORD 'oc8' NOBYPASSRLS;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'oc8_app') THEN
+    CREATE ROLE oc8_app LOGIN PASSWORD 'oc8' NOBYPASSRLS;
+  END IF;
+END$$;
+
+-- Migration role owns the public schema; app role may use it.
+ALTER SCHEMA public OWNER TO oc8_migrate;
+GRANT USAGE ON SCHEMA public TO oc8_app;
+
+-- Future tables/sequences created by the migration role are usable by the app role
+-- with DML only (never DDL). RLS still gates every row for oc8_app.
+ALTER DEFAULT PRIVILEGES FOR ROLE oc8_migrate IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO oc8_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE oc8_migrate IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO oc8_app;
+</file>
+
+<file path="deploy/helm/oc8/templates/_helpers.tpl">
+{{/*
+Expand the name of the chart.
+*/}}
+{{- define "oc8.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Create a default fully qualified app name.
+*/}}
+{{- define "oc8.fullname" -}}
+{{- if .Values.fullnameOverride }}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $name := default .Chart.Name .Values.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "oc8.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "oc8.labels" -}}
+helm.sh/chart: {{ include "oc8.chart" . }}
+{{ include "oc8.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{- define "oc8.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "oc8.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "oc8.componentLabels" -}}
+{{ include "oc8.selectorLabels" . }}
+app.kubernetes.io/component: {{ .component }}
+{{- end }}
+
+{{- define "oc8.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "oc8.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{- define "oc8.backendImage" -}}
+{{- printf "%s:%s" .Values.images.backend.repository .Values.images.backend.tag }}
+{{- end }}
+
+{{- define "oc8.frontendImage" -}}
+{{- printf "%s:%s" .Values.images.frontend.repository .Values.images.frontend.tag }}
+{{- end }}
+
+{{- define "oc8.postgresHost" -}}
+{{- printf "%s-postgres" (include "oc8.fullname" .) }}
+{{- end }}
+
+{{- define "oc8.redisHost" -}}
+{{- printf "%s-redis" (include "oc8.fullname" .) }}
+{{- end }}
+
+{{- define "oc8.backendHost" -}}
+{{- printf "%s-backend" (include "oc8.fullname" .) }}
+{{- end }}
+
+{{- define "oc8.frontendHost" -}}
+{{- printf "%s-frontend" (include "oc8.fullname" .) }}
+{{- end }}
+
+{{- define "oc8.internalBaseUrl" -}}
+{{- if .Values.oc8.internalBaseUrl }}
+{{- .Values.oc8.internalBaseUrl }}
+{{- else }}
+{{- printf "http://%s:8099" (include "oc8.backendHost" .) }}
+{{- end }}
+{{- end }}
+
+{{- define "oc8.ollamaBaseUrl" -}}
+{{- if .Values.oc8.ollamaBaseUrl }}
+{{- .Values.oc8.ollamaBaseUrl }}
+{{- else if .Values.ollama.enabled }}
+{{- printf "http://%s-ollama:11434" (include "oc8.fullname" .) }}
+{{- else }}
+{{- "" }}
+{{- end }}
+{{- end }}
+
+{{- define "oc8.backendEnv" -}}
+- name: OC8_ENV
+  value: {{ .Values.oc8.env | quote }}
+- name: OC8_DATABASE_URL
+  value: {{ printf "postgresql+asyncpg://oc8_app:oc8@%s:5432/oc8" (include "oc8.postgresHost" .) | quote }}
+- name: OC8_MIGRATION_URL
+  value: {{ printf "postgresql+psycopg://oc8_migrate:oc8@%s:5432/oc8" (include "oc8.postgresHost" .) | quote }}
+- name: OC8_REDIS_URL
+  value: {{ printf "redis://%s:6379/0" (include "oc8.redisHost" .) | quote }}
+- name: OC8_JWT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "oc8.fullname" . }}-secrets
+      key: jwt-secret
+- name: OC8_SECRET_KEK
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "oc8.fullname" . }}-secrets
+      key: secret-kek
+- name: OC8_CAPAS_PATH
+  value: {{ .Values.oc8.capasPath | quote }}
+- name: PYTHONPATH
+  value: {{ .Values.oc8.pythonPath | quote }}
+- name: OC8_AGENT_ISOLATION
+  value: {{ .Values.oc8.agentIsolation | quote }}
+- name: OC8_INTERNAL_BASE_URL
+  value: {{ include "oc8.internalBaseUrl" . | quote }}
+- name: OC8_AGENT_RUNTIME_NETWORK
+  value: "oc8_agents"
+- name: OC8_SANDBOX_USER
+  value: {{ .Values.oc8.sandboxUser | quote }}
+- name: OC8_RUNTIME_SESSION_ROOT
+  value: {{ .Values.backend.sessions.mountPath | quote }}
+- name: OC8_EVIDENCE_SWEEP_ENABLED
+  value: {{ .Values.oc8.evidence.sweepEnabled | quote }}
+- name: OC8_EVIDENCE_ARCHIVE_AFTER_MINUTES
+  value: {{ .Values.oc8.evidence.archiveAfterMinutes | quote }}
+- name: OC8_EVIDENCE_RETENTION_DAYS
+  value: {{ .Values.oc8.evidence.retentionDays | quote }}
+- name: OTEL_SDK_DISABLED
+  value: {{ .Values.oc8.otelSdkDisabled | quote }}
+{{- if .Values.oc8.anthropicApiKey }}
+- name: OC8_ANTHROPIC_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "oc8.fullname" . }}-secrets
+      key: anthropic-api-key
+{{- end }}
+{{- if .Values.oc8.openaiApiKey }}
+- name: OC8_OPENAI_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "oc8.fullname" . }}-secrets
+      key: openai-api-key
+{{- end }}
+{{- if .Values.oc8.mistralApiKey }}
+- name: OC8_MISTRAL_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "oc8.fullname" . }}-secrets
+      key: mistral-api-key
+{{- end }}
+{{- $ollamaUrl := include "oc8.ollamaBaseUrl" . }}
+{{- if $ollamaUrl }}
+- name: OC8_OLLAMA_BASE_URL
+  value: {{ $ollamaUrl | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "oc8.waitForPostgresInit" -}}
+- name: wait-for-postgres
+  image: {{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}
+  imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+  command:
+    - sh
+    - -c
+    - |
+      until pg_isready -h {{ include "oc8.postgresHost" . }} -p 5432 -U postgres; do
+        echo "waiting for postgres..."
+        sleep 2
+      done
+{{- end }}
+
+{{- define "oc8.migrateInit" -}}
+- name: migrate
+  image: {{ include "oc8.backendImage" . }}
+  imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+  env:
+    {{- include "oc8.backendEnv" . | nindent 4 }}
+    - name: OC8_SEED_ON_START
+      value: {{ .Values.oc8.seedOnStart | quote }}
+  command:
+    - sh
+    - -c
+    - |
+      set -e
+      alembic upgrade head
+      if [ "$OC8_SEED_ON_START" = "true" ]; then
+        echo "seeding..."
+        oc8 seed || echo "seed skipped/failed (non-fatal)"
+      fi
+{{- end }}
+
+{{- define "oc8.backendVolumes" -}}
+{{- if or .Values.backend.capas.hostPath .Values.backend.capas.existingClaim }}
+- name: capas
+  {{- if .Values.backend.capas.existingClaim }}
+  persistentVolumeClaim:
+    claimName: {{ .Values.backend.capas.existingClaim }}
+  {{- else }}
+  hostPath:
+    path: {{ .Values.backend.capas.hostPath }}
+    type: Directory
+  {{- end }}
+{{- end }}
+{{- if .Values.backend.sessions.enabled }}
+- name: sessions
+  persistentVolumeClaim:
+    claimName: {{ include "oc8.fullname" . }}-sessions
+{{- end }}
+{{- end }}
+
+{{- define "oc8.backendVolumeMounts" -}}
+{{- if or .Values.backend.capas.hostPath .Values.backend.capas.existingClaim }}
+- name: capas
+  mountPath: {{ .Values.oc8.capasPath }}
+  readOnly: true
+{{- end }}
+{{- if .Values.backend.sessions.enabled }}
+- name: sessions
+  mountPath: {{ .Values.backend.sessions.mountPath }}
+{{- end }}
+{{- if .Values.backend.containerSocket.enabled }}
+- name: container-socket
+  mountPath: /var/run/docker.sock
+  readOnly: true
+{{- end }}
+{{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/backend-deployment.yaml">
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "oc8.backendHost" . }}
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8099
+      targetPort: http
+  selector:
+    {{- include "oc8.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oc8.fullname" . }}-backend
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "oc8.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "oc8.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "oc8.serviceAccountName" . }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        {{- include "oc8.waitForPostgresInit" . | nindent 8 }}
+        {{- include "oc8.migrateInit" . | nindent 8 }}
+      containers:
+        - name: backend
+          image: {{ include "oc8.backendImage" . }}
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8099
+          env:
+            {{- include "oc8.backendEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- include "oc8.backendVolumeMounts" . | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          {{- with .Values.backend.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        {{- if .Values.backend.containerSocket.enabled }}
+        - name: container-socket
+          hostPath:
+            path: {{ .Values.backend.containerSocket.hostPath }}
+            type: Socket
+        {{- end }}
+        {{- $vols := include "oc8.backendVolumes" . }}
+        {{- if $vols }}
+        {{- $vols | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/caddy-deployment.yaml">
+{{- if .Values.caddy.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "oc8.fullname" . }}-caddy
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+data:
+  Caddyfile: |
+    :80 {
+      handle /api/* {
+        reverse_proxy {{ include "oc8.backendHost" . }}:8099
+      }
+      handle /health {
+        reverse_proxy {{ include "oc8.backendHost" . }}:8099
+      }
+      handle /llm/* {
+        reverse_proxy {{ include "oc8.backendHost" . }}:8099
+      }
+      handle /mcp* {
+        reverse_proxy {{ include "oc8.backendHost" . }}:8099
+      }
+      handle {
+        reverse_proxy {{ include "oc8.frontendHost" . }}:3000
+      }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "oc8.fullname" . }}-caddy
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: caddy
+spec:
+  type: {{ .Values.caddy.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.caddy.service.port }}
+      targetPort: http
+      {{- if and (eq .Values.caddy.service.type "NodePort") .Values.caddy.service.nodePort }}
+      nodePort: {{ .Values.caddy.service.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "oc8.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: caddy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oc8.fullname" . }}-caddy
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: caddy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "oc8.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: caddy
+  template:
+    metadata:
+      labels:
+        {{- include "oc8.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: caddy
+    spec:
+      serviceAccountName: {{ include "oc8.serviceAccountName" . }}
+      containers:
+        - name: caddy
+          image: {{ .Values.images.caddy.repository }}:{{ .Values.images.caddy.tag }}
+          imagePullPolicy: {{ .Values.images.caddy.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: caddyfile
+              mountPath: /etc/caddy/Caddyfile
+              subPath: Caddyfile
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+          {{- with .Values.caddy.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: caddyfile
+          configMap:
+            name: {{ include "oc8.fullname" . }}-caddy
+        - name: data
+          emptyDir: {}
+        - name: config
+          emptyDir: {}
+{{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/frontend-deployment.yaml">
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "oc8.frontendHost" . }}
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+  selector:
+    {{- include "oc8.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oc8.fullname" . }}-frontend
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "oc8.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        {{- include "oc8.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      serviceAccountName: {{ include "oc8.serviceAccountName" . }}
+      containers:
+        - name: frontend
+          image: {{ include "oc8.frontendImage" . }}
+          imagePullPolicy: {{ .Values.images.frontend.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          {{- with .Values.frontend.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/ingestion-worker-deployment.yaml">
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oc8.fullname" . }}-ingestion-worker
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingestion-worker
+spec:
+  replicas: {{ .Values.ingestionWorker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "oc8.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ingestion-worker
+  template:
+    metadata:
+      labels:
+        {{- include "oc8.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ingestion-worker
+    spec:
+      serviceAccountName: {{ include "oc8.serviceAccountName" . }}
+      initContainers:
+        {{- include "oc8.waitForPostgresInit" . | nindent 8 }}
+        - name: wait-for-backend
+          image: {{ include "oc8.backendImage" . }}
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until python -c "import urllib.request; urllib.request.urlopen('{{ include "oc8.internalBaseUrl" . }}/health')"; do
+                sleep 3
+              done
+      containers:
+        - name: ingestion-worker
+          image: {{ include "oc8.backendImage" . }}
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          command: ["oc8", "ingestion-worker"]
+          env:
+            {{- include "oc8.backendEnv" . | nindent 12 }}
+          {{- with .Values.ingestionWorker.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/ingress.yaml">
+{{- if and .Values.ingress.enabled (not .Values.caddy.enabled) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "oc8.fullname" . }}
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "oc8.backendHost" $ }}
+                port:
+                  number: 8099
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "oc8.backendHost" $ }}
+                port:
+                  number: 8099
+          - path: /llm
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "oc8.backendHost" $ }}
+                port:
+                  number: 8099
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "oc8.backendHost" $ }}
+                port:
+                  number: 8099
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "oc8.frontendHost" $ }}
+                port:
+                  number: 3000
+          {{- end }}
+    {{- end }}
+{{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/NOTES.txt">
+Thank you for installing {{ .Chart.Name }}!
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+{{- if .Values.caddy.enabled }}
+
+Get the application URL:
+{{- if contains "LoadBalancer" .Values.caddy.service.type }}
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+        kubectl get svc --namespace {{ .Release.Namespace }} {{ include "oc8.fullname" . }}-caddy -w
+{{- else if contains "NodePort" .Values.caddy.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "oc8.fullname" . }}-caddy)
+  export NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT/
+{{- else }}
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "oc8.fullname" . }}-caddy 8080:80
+  echo http://127.0.0.1:8080/
+{{- end }}
+
+{{- else if .Values.ingress.enabled }}
+
+Ingress is enabled. Open the host configured in values.yaml (ingress.hosts).
+
+{{- end }}
+
+Next steps:
+  1. Open the UI and complete the welcome wizard (model, agent, tools).
+  2. Mount capas if not already: set backend.capas.hostPath or backend.capas.existingClaim.
+  3. For production: set oc8.env=prod and restrict network access to dev-login.
+
+Health check:
+  kubectl exec --namespace {{ .Release.Namespace }} deploy/{{ include "oc8.fullname" . }}-backend -- python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8099/health').read())"
+
+Documentation:
+  https://docs.oc8.io/user/quickstart
+</file>
+
+<file path="deploy/helm/oc8/templates/ollama-statefulset.yaml">
+{{- if .Values.ollama.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "oc8.fullname" . }}-ollama
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+  selector:
+    {{- include "oc8.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "oc8.fullname" . }}-ollama
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  serviceName: {{ include "oc8.fullname" . }}-ollama
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "oc8.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama
+  template:
+    metadata:
+      labels:
+        {{- include "oc8.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: {{ .Values.images.ollama.repository }}:{{ .Values.images.ollama.tag }}
+          imagePullPolicy: {{ .Values.images.ollama.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 11434
+          volumeMounts:
+            - name: data
+              mountPath: /root/.ollama
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.ollama.storageClassName }}
+        storageClassName: {{ .Values.ollama.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.ollama.storage }}
+{{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/postgres-init-configmap.yaml">
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "oc8.fullname" . }}-postgres-init
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+data:
+  10-init.sql: |
+    CREATE EXTENSION IF NOT EXISTS vector;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'oc8_migrate') THEN
+        CREATE ROLE oc8_migrate LOGIN PASSWORD 'oc8' NOBYPASSRLS;
+      END IF;
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'oc8_app') THEN
+        CREATE ROLE oc8_app LOGIN PASSWORD 'oc8' NOBYPASSRLS;
+      END IF;
+    END$$;
+
+    ALTER SCHEMA public OWNER TO oc8_migrate;
+    GRANT USAGE ON SCHEMA public TO oc8_app;
+
+    ALTER DEFAULT PRIVILEGES FOR ROLE oc8_migrate IN SCHEMA public
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO oc8_app;
+    ALTER DEFAULT PRIVILEGES FOR ROLE oc8_migrate IN SCHEMA public
+      GRANT USAGE, SELECT ON SEQUENCES TO oc8_app;
+{{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/postgres-statefulset.yaml">
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "oc8.postgresHost" . }}
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  selector:
+    {{- include "oc8.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "oc8.fullname" . }}-postgres
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: {{ include "oc8.postgresHost" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "oc8.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "oc8.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "oc8.serviceAccountName" . }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: {{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}
+          imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_DB
+              value: oc8
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "oc8.fullname" . }}-secrets
+                  key: postgres-password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+                - -d
+                - oc8
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+                - -d
+                - oc8
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          {{- with .Values.postgres.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: init
+          configMap:
+            name: {{ include "oc8.fullname" . }}-postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.postgres.storageClassName }}
+        storageClassName: {{ .Values.postgres.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage }}
+{{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/redis-deployment.yaml">
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "oc8.redisHost" . }}
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  selector:
+    {{- include "oc8.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oc8.fullname" . }}-redis
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "oc8.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "oc8.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      serviceAccountName: {{ include "oc8.serviceAccountName" . }}
+      containers:
+        - name: redis
+          image: {{ .Values.images.redis.repository }}:{{ .Values.images.redis.tag }}
+          imagePullPolicy: {{ .Values.images.redis.pullPolicy }}
+          args:
+            - redis-server
+            - --maxmemory
+            - {{ .Values.redis.maxMemory | quote }}
+            - --maxmemory-policy
+            - volatile-ttl
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          {{- with .Values.redis.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/scheduler-deployment.yaml">
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oc8.fullname" . }}-scheduler
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler
+spec:
+  replicas: {{ .Values.scheduler.replicas }}
+  selector:
+    matchLabels:
+      {{- include "oc8.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: scheduler
+  template:
+    metadata:
+      labels:
+        {{- include "oc8.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: scheduler
+    spec:
+      serviceAccountName: {{ include "oc8.serviceAccountName" . }}
+      initContainers:
+        {{- include "oc8.waitForPostgresInit" . | nindent 8 }}
+        - name: wait-for-backend
+          image: {{ include "oc8.backendImage" . }}
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until python -c "import urllib.request; urllib.request.urlopen('{{ include "oc8.internalBaseUrl" . }}/health')"; do
+                sleep 3
+              done
+      containers:
+        - name: scheduler
+          image: {{ include "oc8.backendImage" . }}
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          command: ["oc8", "scheduler"]
+          env:
+            {{- include "oc8.backendEnv" . | nindent 12 }}
+          {{- with .Values.scheduler.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/secret.yaml">
+{{- if not .Values.secrets.jwtSecret }}
+{{- fail "secrets.jwtSecret is required — generate with: openssl rand -hex 32" }}
+{{- end }}
+{{- if not .Values.secrets.secretKek }}
+{{- fail "secrets.secretKek is required — generate with: openssl rand -base64 32" }}
+{{- end }}
+{{- if not .Values.secrets.postgresPassword }}
+{{- fail "secrets.postgresPassword is required — generate with: openssl rand -hex 16" }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "oc8.fullname" . }}-secrets
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  jwt-secret: {{ .Values.secrets.jwtSecret | quote }}
+  secret-kek: {{ .Values.secrets.secretKek | quote }}
+  postgres-password: {{ .Values.secrets.postgresPassword | quote }}
+  {{- if .Values.oc8.anthropicApiKey }}
+  anthropic-api-key: {{ .Values.oc8.anthropicApiKey | quote }}
+  {{- end }}
+  {{- if .Values.oc8.openaiApiKey }}
+  openai-api-key: {{ .Values.oc8.openaiApiKey | quote }}
+  {{- end }}
+  {{- if .Values.oc8.mistralApiKey }}
+  mistral-api-key: {{ .Values.oc8.mistralApiKey | quote }}
+  {{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/serviceaccount.yaml">
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "oc8.serviceAccountName" . }}
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: false
+</file>
+
+<file path="deploy/helm/oc8/templates/sessions-pvc.yaml">
+{{- if and .Values.backend.sessions.enabled (not .Values.backend.capas.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "oc8.fullname" . }}-sessions
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.backend.sessions.storageClassName }}
+  storageClassName: {{ .Values.backend.sessions.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backend.sessions.size }}
+{{- end }}
+</file>
+
+<file path="deploy/helm/oc8/templates/worker-deployment.yaml">
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oc8.fullname" . }}-worker
+  labels:
+    {{- include "oc8.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "oc8.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "oc8.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "oc8.serviceAccountName" . }}
+      initContainers:
+        {{- include "oc8.waitForPostgresInit" . | nindent 8 }}
+        - name: wait-for-backend
+          image: {{ include "oc8.backendImage" . }}
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until python -c "import urllib.request; urllib.request.urlopen('{{ include "oc8.internalBaseUrl" . }}/health')"; do
+                echo "waiting for backend..."
+                sleep 3
+              done
+      containers:
+        - name: worker
+          image: {{ include "oc8.backendImage" . }}
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          command: ["oc8", "worker"]
+          env:
+            {{- include "oc8.backendEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- include "oc8.backendVolumeMounts" . | nindent 12 }}
+          {{- with .Values.worker.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        {{- if .Values.backend.containerSocket.enabled }}
+        - name: container-socket
+          hostPath:
+            path: {{ .Values.backend.containerSocket.hostPath }}
+            type: Socket
+        {{- end }}
+        {{- $vols := include "oc8.backendVolumes" . }}
+        {{- if $vols }}
+        {{- $vols | nindent 8 }}
+        {{- end }}
+</file>
+
+<file path="deploy/helm/oc8/.helmignore">
+.DS_Store
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.git/
+.gitignore
+.bzr/
+.bzrignore
+.hg/
+.svn/
+</file>
+
+<file path="deploy/helm/oc8/Chart.yaml">
+apiVersion: v2
+name: oc8
+description: Self-hosted oc8 — AI agent platform (Community Edition)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.24.0-0"
+home: https://oc8.ai
+sources:
+  - https://github.com/oc8/oc8
+maintainers:
+  - name: oc8 contributors
+keywords:
+  - oc8
+  - agents
+  - mcp
+  - self-hosted
+</file>
+
+<file path="deploy/helm/oc8/ci.values.yaml">
+# Dummy secrets for `helm template`, `helm lint`, and CI only — never use in production.
+secrets:
+  jwtSecret: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  secretKek: "ZHVtbXktc2VjcmV0LWtlay1mb3ItY2ktb25seQ=="
+  postgresPassword: "ci-postgres-password"
+
+oc8:
+  seedOnStart: false
+
+caddy:
+  service:
+    type: ClusterIP
+</file>
+
+<file path="deploy/helm/oc8/README.md">
+# oc8 Helm chart
+
+Install the **Community Edition** stack on Kubernetes — the same components as
+`docker compose up`: Postgres (pgvector), Redis, migrate, backend, worker,
+ingestion-worker, scheduler, frontend, and Caddy as edge proxy.
+
+## Prerequisites
+
+- Kubernetes 1.24+
+- Helm 3.10+
+- **Container images** built from this repository (see below)
+- A default `StorageClass` for Postgres and session PVCs (or set `storageClassName`)
+
+## Build images (from repo root)
+
+```bash
+docker build -f Dockerfile.backend -t oc8-backend:latest ./backend
+docker build -t oc8-frontend:latest ./frontend
+```
+
+Push to your registry and set `images.backend.repository` / `images.frontend.repository`
+in `values.yaml`, or load into kind/minikube:
+
+```bash
+kind load docker-image oc8-backend:latest oc8-frontend:latest
+```
+
+## Generate secrets
+
+```bash
+export OC8_JWT_SECRET=$(openssl rand -hex 32)
+export OC8_SECRET_KEK=$(openssl rand -base64 32)
+export POSTGRES_PASSWORD=$(openssl rand -hex 16)
+```
+
+## Install
+
+From the repository root:
+
+```bash
+helm upgrade --install oc8 ./deploy/helm/oc8 \
+  --namespace oc8 --create-namespace \
+  --set secrets.jwtSecret="$OC8_JWT_SECRET" \
+  --set secrets.secretKek="$OC8_SECRET_KEK" \
+  --set secrets.postgresPassword="$POSTGRES_PASSWORD"
+```
+
+### Capas (tool packs)
+
+The Compose stack bind-mounts `./capas`. In Kubernetes you must provide the capas
+tree explicitly:
+
+**Option A — hostPath (local clusters / kind):**
+
+```bash
+helm upgrade --install oc8 ./deploy/helm/oc8 \
+  ... \
+  --set backend.capas.hostPath=/path/on/node/to/oc8/capas
+```
+
+**Option B — PVC** populated by your own init job or CI, then:
+
+```yaml
+backend:
+  capas:
+    existingClaim: oc8-capas
+```
+
+### Local models (Ollama)
+
+```bash
+helm upgrade --install oc8 ./deploy/helm/oc8 \
+  ... \
+  --set ollama.enabled=true
+```
+
+Then pull a model into the Ollama pod and select it in **Settings → Models**.
+
+### Agent sandboxes (Docker-out-of-Docker)
+
+Off by default. Enabling mounts the container runtime socket — **root-equivalent**
+on the node. Only for dedicated test clusters:
+
+```yaml
+backend:
+  containerSocket:
+    enabled: true
+oc8:
+  agentIsolation: true
+```
+
+## Configuration
+
+| Value | Purpose |
+|-------|---------|
+| `secrets.*` | Required JWT, KEK, Postgres password |
+| `oc8.env` | `dev` (default) or `prod` — disables dev-login when `prod` |
+| `oc8.seedOnStart` | Seed demo tenant on first migrate (default `true`) |
+| `worker.replicas` | Scale workers (default `2`) |
+| `caddy.service.type` | `LoadBalancer` (default), `NodePort`, or `ClusterIP` |
+| `ingress.enabled` | Use Ingress instead of Caddy (set `caddy.enabled: false`) |
+| `ollama.enabled` | Bundled Ollama StatefulSet |
+
+See `values.yaml` for the full list.
+
+## Upgrade
+
+```bash
+helm upgrade oc8 ./deploy/helm/oc8 -n oc8 -f my-values.yaml
+```
+
+The backend init container runs `alembic upgrade head` on each backend pod start.
+Keep `backend.replicas: 1` unless you externalise migrations.
+
+## Uninstall
+
+```bash
+helm uninstall oc8 -n oc8
+```
+
+Postgres and session PVCs are retained unless you delete them manually.
+
+## Publishing the chart
+
+When `charts.oc8.io` is live:
+
+```bash
+helm package deploy/helm/oc8
+helm repo index .
+```
+
+Until then, install from the git checkout path as shown above.
+
+## Related
+
+- [Docker Compose deploy](../../../docs/DEPLOY.md)
+- [Quickstart](../../../docs/user/quickstart.md)
+</file>
+
+<file path="deploy/helm/oc8/values.yaml">
+# Default values for the oc8 Helm chart.
+# Mirrors docker-compose.yml — see deploy/helm/oc8/README.md for install steps.
+
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  # Image pull secret for private registries (optional).
+  imagePullSecrets: []
+
+images:
+  backend:
+    repository: oc8-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: oc8-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  postgres:
+    repository: pgvector/pgvector
+    tag: pg15
+    pullPolicy: IfNotPresent
+  redis:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  caddy:
+    repository: caddy
+    tag: "2"
+    pullPolicy: IfNotPresent
+  ollama:
+    repository: ollama/ollama
+    tag: latest
+    pullPolicy: IfNotPresent
+
+# --- Required secrets (generate before install) ---
+#   openssl rand -hex 32
+secrets:
+  jwtSecret: ""
+  secretKek: ""
+  postgresPassword: ""
+
+oc8:
+  # `dev` enables unauthenticated dev-login — never expose on the public internet.
+  env: dev
+  seedOnStart: true
+  capasPath: /app/capas
+  pythonPath: /app/capas/cli_harness
+
+  # Model provider keys (optional — can also configure in the UI).
+  anthropicApiKey: ""
+  openaiApiKey: ""
+  mistralApiKey: ""
+
+  agentIsolation: false
+  sandboxUser: ""
+  internalBaseUrl: "" # defaults to in-cluster backend service URL
+
+  evidence:
+    sweepEnabled: false
+    archiveAfterMinutes: 60
+    retentionDays: 0
+
+  ollamaBaseUrl: "" # set automatically when ollama.enabled=true
+
+  otelSdkDisabled: true
+
+postgres:
+  enabled: true
+  storage: 20Gi
+  storageClassName: ""
+  resources: {}
+
+redis:
+  enabled: true
+  maxMemory: 256mb
+  resources: {}
+
+backend:
+  replicas: 1
+  resources: {}
+  # Agent sandboxes need the container runtime socket — off by default in K8s.
+  containerSocket:
+    enabled: false
+    hostPath: /var/run/docker.sock
+  capas:
+    # Mount the capas/ tree into backend and worker (required for tool packs).
+    # hostPath: /path/on/node/to/oc8/capas   # kind/minikube with repo on node
+    hostPath: ""
+    existingClaim: ""
+  sessions:
+    enabled: true
+    size: 10Gi
+    storageClassName: ""
+    mountPath: /var/lib/oc8/sessions
+
+worker:
+  replicas: 2
+  resources: {}
+
+ingestionWorker:
+  replicas: 1
+  resources: {}
+
+scheduler:
+  replicas: 1
+  resources: {}
+
+frontend:
+  replicas: 1
+  resources: {}
+
+caddy:
+  enabled: true
+  service:
+    type: LoadBalancer
+    port: 80
+    nodePort: null
+  resources: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: oc8.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+ollama:
+  enabled: false
+  storage: 20Gi
+  storageClassName: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+</file>
+
+<file path="deploy/helm/README.md">
+# Helm charts
+
+| Chart | Description |
+|-------|-------------|
+| [oc8](./oc8/) | Full oc8 Community stack for Kubernetes |
+
+Install from a git checkout:
+
+```bash
+helm upgrade --install oc8 ./deploy/helm/oc8 --namespace oc8 --create-namespace \
+  --set secrets.jwtSecret="$(openssl rand -hex 32)" \
+  --set secrets.secretKek="$(openssl rand -base64 32)" \
+  --set secrets.postgresPassword="$(openssl rand -hex 16)"
+```
+
+See [oc8/README.md](./oc8/README.md) for images, capas mounts, and values.
+</file>
+
+<file path="docs/GETTING_STARTED.md">
+# Getting started with oc8
+
+> **Start here:** [User documentation → Quickstart](user/quickstart.md)
+
+## Fastest path
+
+```bash
+./scripts/quickstart.sh          # macOS / Linux
+# PowerShell on Windows:
+./scripts/quickstart.ps1
+```
+
+Then open the printed URL, complete setup, configure a model, create an agent,
+and run a task.
+
+## All entry points
+
+| Audience | Documentation |
+|----------|----------------|
+| Operators (use oc8) | [docs/user/](user/index.md) |
+| Administrators (deploy) | [Install and maintain](user/install-and-maintain/index.md) |
+| Capa authors | [Developer docs](developer/index.md) |
+| Core contributors | [Contributing](contributing/index.md) |
+
+## Developer-first run (API / curl)
+
+[First run](FIRST_RUN.md) — manual Postgres, seed, worker, MCP filesystem demo
+without the full UI stack.
+</file>
+
+<file path="docker-compose.demo.yml">
+# Hosted showcase override: bilingual ACME mock data behind real password login.
+# Never enables unauthenticated dev-login (that is docker-compose.dev.yml).
+#
+# Usage:
+#   # set OC8_DEMO_PASSWORD in .env (min 8 chars), then:
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build
+#
+# Sign in as OC8_DEMO_EMAIL (default demo@oc8.ai) with OC8_DEMO_PASSWORD.
+services:
+  migrate:
+    environment:
+      OC8_ENV: prod
+      OC8_DEMO: "true"
+      OC8_SEED_ON_START: "true"
+      OC8_DEMO_EMAIL: ${OC8_DEMO_EMAIL:-demo@oc8.ai}
+      OC8_DEMO_PASSWORD: ${OC8_DEMO_PASSWORD:?set OC8_DEMO_PASSWORD in .env for the showcase login}
+  backend:
+    environment:
+      OC8_ENV: prod
+      OC8_DEMO: "true"
+      OC8_DEMO_EMAIL: ${OC8_DEMO_EMAIL:-demo@oc8.ai}
+      OC8_DEMO_PASSWORD: ${OC8_DEMO_PASSWORD:?set OC8_DEMO_PASSWORD in .env for the showcase login}
+  worker:
+    environment:
+      OC8_ENV: prod
+      OC8_DEMO: "true"
+  ingestion-worker:
+    environment:
+      OC8_ENV: prod
+      OC8_DEMO: "true"
+  scheduler:
+    environment:
+      OC8_ENV: prod
+      OC8_DEMO: "true"
+  runtime-provisioner:
+    environment:
+      OC8_ENV: prod
+      OC8_DEMO: "true"
+</file>
+
+<file path="docker-compose.override.yml">
+# Local override: expose oc8 over HTTP only.
+# This avoids reserving host port 443 when OC8_DOMAIN is empty/Tailscale handles access.
+services:
+  caddy:
+    container_name: oc8-caddy
+    networks:
+      default:
+      caddy-hs:
+        aliases:
+          - oc8-caddy
+    ports: !reset []
+    expose: 
+      - 80
+    labels:
+       caddy: oc8.hs
+       caddy.tls: internal
+       caddy.reverse_proxy: "oc8-caddy:80"
+
+    
+networks:
+  default:
+    name: oc8
+  caddy-hs:
+    external: true
+</file>
+
+<file path="docker-compose.dev.yml">
+# Development override. Never use this on a reachable Community instance:
+# it enables unauthenticated dev-login and creates disposable demo data.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# For a *hosted* product walkthrough with real password login, use
+# docker-compose.demo.yml instead (OC8_ENV=prod + seeded demo@… account).
+#
+# OC8_DEMO=true loads the bilingual ACME showcase seed (EN + DE) and flags the
+# instance so the UI can show a Demo badge. Pair with OC8_ENV=dev so the
+# unauthenticated demo login works.
+services:
+  migrate:
+    environment:
+      OC8_ENV: dev
+      OC8_DEMO: "true"
+      OC8_SEED_ON_START: "true"
+  backend:
+    environment:
+      OC8_ENV: dev
+      OC8_DEMO: "true"
+  worker:
+    environment:
+      OC8_ENV: dev
+      OC8_DEMO: "true"
+  ingestion-worker:
+    environment:
+      OC8_ENV: dev
+      OC8_DEMO: "true"
+  scheduler:
+    environment:
+      OC8_ENV: dev
+      OC8_DEMO: "true"
+</file>
+
+<file path=".env.example">
+# Copy to .env and fill in. `docker compose up` reads .env automatically.
+
+# --- Secrets that MUST NOT keep a default on a server ---
+# openssl rand -hex 32
+OC8_JWT_SECRET=
+# Base64 of 32 random bytes. Without it the secret store fails closed.
+# openssl rand -base64 32
+OC8_SECRET_KEK=
+# The Postgres superuser password (separate from the oc8_app/oc8_migrate roles,
+# whose passwords are fixed to `oc8` by backend/docker/init-db.sql).
+POSTGRES_PASSWORD=
+
+# --- Object storage (file attachments: chat + agent Instructions uploads) ---
+# Bundled-by-default, switchable via env: the bundled `minio` service in
+# docker-compose.yml backs these by default. Point OC8_S3_ENDPOINT/OC8_S3_*
+# at any S3-compatible endpoint (AWS S3, Cloudflare R2, etc.) instead to use
+# external storage in production -- no code change needed. See oc8.storage.s3.
+OC8_S3_ENDPOINT=http://minio:9000
+OC8_S3_ACCESS_KEY=oc8-minio
+OC8_S3_SECRET_KEY=change-me-please
+OC8_S3_BUCKET=oc8-uploads
+OC8_S3_REGION=us-east-1
+
+# --- Optional ---
+# `prod` (default) requires real password auth (POST /auth/setup / /auth/login)
+# -- the Community welcome wizard. Set to `dev` to instead enable the
+# unauthenticated dev-login endpoint and the seeded ACME/Globex demo tenants
+# below -- never do this on a network-reachable instance. For a one-off local
+# demo stack with both, prefer
+# `docker compose -f docker-compose.yml -f docker-compose.dev.yml up` instead
+# of changing this file, so the demo settings can't be copy-pasted forward
+# into a real deployment's .env.
+OC8_ENV=prod
+# Port Caddy listens on (host side). Default 80. Also accepts a full
+# HOST_IP:PORT (e.g. 127.0.0.1:8080) to bind loopback-only instead of all
+# interfaces -- for running behind your own reverse proxy, see DEPLOY.md.
+OC8_HTTP_PORT=80
+# Your domain (e.g. oc8.example.com), if you have one. Set this and Caddy
+# automatically provisions a Let's Encrypt cert and serves HTTPS on 443 --
+# leave empty for plain HTTP on OC8_HTTP_PORT (IP-only testing). DNS must
+# already point at this host before you start the stack, or issuance fails.
+OC8_DOMAIN=
+# Where oc8 is reachable from a browser -- used to build the links in
+# password-reset/email-confirmation mail. Set this to match OC8_DOMAIN above
+# (with https://), or the port you published oc8 on. Left as localhost, every
+# such link is unreachable for anyone reading that mail elsewhere.
+OC8_FRONTEND_BASE_URL=http://localhost
+# Seed demo tenants on first bring-up. With OC8_ENV=dev this feeds unauthenticated
+# dev-login (ACME + Globex unless OC8_DEMO=true). With compose.demo.yml
+# (OC8_ENV=prod + OC8_DEMO) it seeds ACME + the password admin below instead.
+# Leave false for a normal Community first-run that uses /auth/setup.
+OC8_SEED_ON_START=false
+# Showcase mode: load the full bilingual (EN/DE) ACME mock tenant and tell the
+# UI this is a demo. For a *hosted* walkthrough with real password login use
+# `docker compose -f docker-compose.yml -f docker-compose.demo.yml up` and set
+# OC8_DEMO_PASSWORD below. For local hacking with unauthenticated dev-login,
+# prefer docker-compose.dev.yml instead. Never enable OC8_ENV=dev on a public host.
+OC8_DEMO=false
+# Demo admin used by compose.demo.yml (password login into the ACME showcase).
+OC8_DEMO_EMAIL=demo@oc8.ai
+OC8_DEMO_PASSWORD=
+# Observability: the app is OTel-instrumented but this stack ships no collector,
+# so export is disabled by default. Flip to false and set the endpoint to use it.
+OTEL_SDK_DISABLED=true
+
+# --- A real agent run needs a model: EITHER a cloud key OR the `ollama` profile ---
+OC8_ANTHROPIC_API_KEY=
+OC8_OPENAI_API_KEY=
+OC8_MISTRAL_API_KEY=
+# Only relevant with `--profile ollama`; points the backend at the ollama service.
+OC8_OLLAMA_BASE_URL=http://ollama:11434
+
+# --- Container runtime (Docker by default; Podman is a drop-in alternative) ---
+# `docker` (default) or `podman`. Only read by scripts/quickstart.sh/.ps1 -- it
+# picks which CLI orchestrates Compose and, for podman, auto-fills
+# OC8_CONTAINER_SOCKET below. Never read by the Python backend: the sandbox
+# driver talks plain Docker-API-compatible REST and does not care which
+# engine is listening. See
+# docs/superpowers/specs/2026-08-08-podman-runtime-support-design.md.
+OC8_CONTAINER_RUNTIME=docker
+# Host-side path bind-mounted into the backend/worker services as their
+# container-runtime socket. Leave empty for Docker's default
+# (/var/run/docker.sock). scripts/quickstart.sh/.ps1 fill this in
+# automatically when OC8_CONTAINER_RUNTIME=podman.
+OC8_CONTAINER_SOCKET=
+
+# --- Web Push notifications ---
+# VAPID key pair for Web Push notifications. One pair per instance (not a
+# tenant secret). Generate with: uv run python -m pywebpush.vapid --gen
+# (from backend/), or `openssl ecparam -genkey -name prime256v1` + a base64url
+# conversion. Leave both empty to disable push sending entirely (checked at
+# send time, not at startup).
+OC8_VAPID_PUBLIC_KEY=
+OC8_VAPID_PRIVATE_KEY=
+OC8_VAPID_SUBJECT=mailto:admin@example.com
+</file>
+
+<file path="scripts/quickstart.sh">
+#!/usr/bin/env bash
+# Start a safe local oc8 evaluation instance on macOS or Linux.
+# It creates only missing local secrets and never resets containers or volumes.
+#
+# Interactive by default: asks which operating mode to run (Community, Demo,
+# or Dev) and, for Community/Demo, whether you already run your own reverse
+# proxy (binds oc8 to loopback, OC8_QUICKSTART_OWN_PROXY/_PROXY_PORT/
+# _EXTERNAL_URL) or want oc8's own Caddy to handle it (an optional custom
+# domain for automatic HTTPS, OC8_QUICKSTART_DOMAIN). All can be preset for
+# scripted/non-interactive runs via OC8_QUICKSTART_MODE (community|demo|dev)
+# and the vars above -- when stdin isn't a terminal and none are set, it
+# falls back to the previous non-interactive default: Community mode, no
+# proxy, no domain.
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+fail() {
+  printf 'Quickstart stopped: %s\n' "$1" >&2
+  exit 1
+}
+
+case "$(uname -s)" in
+  Darwin|Linux) ;;
+  MINGW*|MSYS*|CYGWIN*)
+    fail "Use PowerShell instead: .\\scripts\\quickstart.ps1"
+    ;;
+  *) fail "Unsupported platform. Use macOS, Linux, or scripts/quickstart.ps1 on Windows." ;;
+esac
+
+command -v openssl >/dev/null 2>&1 || fail "openssl is required to generate local secrets."
+
+# Resolution order: an explicit env var wins, then a value already persisted
+# in .env from a previous run, then auto-detect from what's on PATH.
+resolve_container_runtime() {
+  if [[ -n "${OC8_CONTAINER_RUNTIME:-}" ]]; then
+    printf '%s\n' "$OC8_CONTAINER_RUNTIME"
+    return
+  fi
+  if [[ -f .env ]]; then
+    local from_env
+    from_env="$(awk -F= '$1 == "OC8_CONTAINER_RUNTIME" { sub(/^[^=]*=/, ""); print; exit }' .env)"
+    if [[ -n "$from_env" ]]; then
+      printf '%s\n' "$from_env"
+      return
+    fi
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    printf 'docker\n'
+  elif command -v podman >/dev/null 2>&1; then
+    printf 'podman\n'
+  else
+    fail "Neither Docker nor Podman was found. Install one of them first."
+  fi
+}
+
+CONTAINER_RUNTIME="$(resolve_container_runtime)"
+case "$CONTAINER_RUNTIME" in
+  docker|podman) ;;
+  *) fail "OC8_CONTAINER_RUNTIME must be 'docker' or 'podman', got '$CONTAINER_RUNTIME'." ;;
+esac
+
+if [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
+  command -v docker >/dev/null 2>&1 || fail "Docker is required. Install Docker Desktop or Docker Engine first."
+  docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required."
+  docker info >/dev/null 2>&1 || fail "Docker is installed but its daemon is not running. Start Docker first."
+  COMPOSE_CMD=(docker compose)
+else
+  command -v podman >/dev/null 2>&1 || fail "Podman is required (OC8_CONTAINER_RUNTIME=podman). Install it first."
+  if podman compose version >/dev/null 2>&1; then
+    COMPOSE_CMD=(podman compose)
+  elif command -v podman-compose >/dev/null 2>&1; then
+    COMPOSE_CMD=(podman-compose)
+  else
+    fail "Podman Compose is required: install the 'podman compose' plugin (Podman v4+) or podman-compose."
+  fi
+  podman info >/dev/null 2>&1 || fail "Podman is installed but not ready. Run 'podman machine start' (macOS) or 'systemctl --user enable --now podman.socket' (Linux) first."
+fi
+
+if [[ ! -f .env ]]; then
+  cp .env.example .env
+  chmod 600 .env 2>/dev/null || true
+  printf 'Created .env from .env.example.\n'
+else
+  printf 'Using existing .env; non-empty values will not be changed.\n'
+fi
+
+env_value() {
+  awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' .env
+}
+
+# Unconditional overwrite (or append if the key is missing entirely). Only
+# used below for values the user just typed at a prompt -- everything else
+# in this script goes through set_env_value_if_missing so a rerun never
+# clobbers what's already in .env.
+set_env_value() {
+  local key="$1"
+  local value="$2"
+
+  local temp_env
+  temp_env="$(mktemp "${TMPDIR:-/tmp}/oc8-env.XXXXXX")"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { found = 0 }
+    $0 ~ "^" key "=" { print key "=" value; found = 1; next }
+    { print }
+    END { if (!found) print key "=" value }
+  ' .env > "$temp_env"
+  mv "$temp_env" .env
+  chmod 600 .env 2>/dev/null || true
+}
+
+set_env_value_if_missing() {
+  local key="$1"
+  local value="$2"
+  local current
+  current="$(env_value "$key")"
+  if [[ -n "$current" ]]; then
+    return
+  fi
+  set_env_value "$key" "$value"
+  printf 'Generated %s in .env.\n' "$key"
+}
+
+is_interactive() {
+  [[ -t 0 && -t 1 ]]
+}
+
+# --- Operating mode: Community (empty, real password setup), Demo (seeded
+# ACME showcase behind real password login), or Dev (seeded ACME + instant
+# unauthenticated login, localhost only). Each maps to a docker-compose.yml
+# + override combination -- see docker-compose.demo.yml/docker-compose.dev.yml
+# for exactly what each one changes.
+MODE="${OC8_QUICKSTART_MODE:-}"
+if [[ -z "$MODE" ]]; then
+  if is_interactive; then
+    printf '\nWhich operating mode do you want to run?\n'
+    printf '  1) Prod      — empty instance, real password setup (recommended)\n'
+    printf '  2) Demo      — seeded bilingual ACME showcase data behind a real password login\n'
+    printf '  3) Dev       — seeded ACME data + instant unauthenticated login (localhost only, never expose)\n'
+    read -r -p 'Choice [1]: ' mode_choice
+    case "${mode_choice:-1}" in
+      1|"") MODE="community" ;;
+      2) MODE="demo" ;;
+      3) MODE="dev" ;;
+      *) fail "Invalid choice: ${mode_choice}" ;;
+    esac
+  else
+    MODE="community"
+  fi
+fi
+case "$MODE" in
+  community|demo|dev) ;;
+  *) fail "OC8_QUICKSTART_MODE must be 'community', 'demo', or 'dev', got '$MODE'." ;;
+esac
+
+COMPOSE_FILES=(-f docker-compose.yml)
+case "$MODE" in
+  demo)
+    COMPOSE_FILES+=(-f docker-compose.demo.yml)
+    printf 'Demo mode: seeded ACME showcase data behind a real password login.\n'
+    ;;
+  dev)
+    COMPOSE_FILES+=(-f docker-compose.dev.yml)
+    printf 'Dev mode: instant unauthenticated admin login. LOCALHOST ONLY -- never expose this to a network.\n'
+    ;;
+esac
+
+# --- Own reverse proxy, or built-in Caddy? Skipped in Dev mode: that mode's
+# login has no password, so it must never be reachable off localhost anyway.
+# Always asks interactively, with no default -- a checkout reused for a
+# different host/mode must not silently inherit an old answer.
+if [[ "$MODE" != "dev" ]]; then
+  own_proxy="${OC8_QUICKSTART_OWN_PROXY:-}"
+  if [[ -z "$own_proxy" ]] && is_interactive; then
+    read -r -p 'Already running your own reverse proxy on this host (nginx, Traefik, another Caddy)? [y/N] ' own_proxy
+  fi
+  if [[ "$own_proxy" =~ ^[Yy] ]]; then
+    # Your proxy owns the domain and the TLS certificate; oc8's own Caddy
+    # must not also try to grab :80/:443 or provision one. Bind it to
+    # loopback on a plain port instead, and hand back what to point at.
+    proxy_port="${OC8_QUICKSTART_PROXY_PORT:-}"
+    if [[ -z "$proxy_port" ]] && is_interactive; then
+      read -r -p 'Localhost port for your proxy to reach oc8 on (leave empty for 8080): ' proxy_port
+    fi
+    proxy_port="${proxy_port:-8080}"
+    set_env_value "OC8_HTTP_PORT" "127.0.0.1:${proxy_port}"
+    set_env_value "OC8_DOMAIN" ""
+    external_url="${OC8_QUICKSTART_EXTERNAL_URL:-}"
+    if [[ -z "$external_url" ]] && is_interactive; then
+      read -r -p 'Externally visible URL your proxy serves this under (e.g. https://oc8.example.com): ' external_url
+    fi
+    if [[ -n "$external_url" ]]; then
+      set_env_value "OC8_FRONTEND_BASE_URL" "$external_url"
+    fi
+    printf 'Point your reverse proxy at 127.0.0.1:%s (plain HTTP) -- oc8'"'"'s own Caddy will not attempt to obtain a certificate.\n' "$proxy_port"
+  else
+    existing_domain="$(env_value OC8_DOMAIN)"
+    domain="${OC8_QUICKSTART_DOMAIN:-}"
+    if [[ -z "$domain" ]] && is_interactive; then
+      read -r -p 'Custom domain for automatic HTTPS (leave empty for plain HTTP): ' domain
+    elif [[ -z "$domain" ]] && ! is_interactive; then
+      domain="$existing_domain"
+    fi
+    if [[ -n "$domain" ]]; then
+      if [[ "$domain" != "$existing_domain" ]]; then
+        printf 'Point DNS for %s at this host before continuing, or certificate issuance will fail.\n' "$domain"
+      fi
+      set_env_value "OC8_DOMAIN" "$domain"
+      current_base_url="$(env_value OC8_FRONTEND_BASE_URL)"
+      if [[ -z "$current_base_url" || "$current_base_url" == "http://localhost" ]]; then
+        set_env_value "OC8_FRONTEND_BASE_URL" "https://${domain}"
+      else
+        printf 'Note: OC8_FRONTEND_BASE_URL is already set to %s -- leaving it, but it should probably be https://%s.\n' "$current_base_url" "$domain"
+      fi
+    elif [[ -n "$existing_domain" ]]; then
+      set_env_value "OC8_DOMAIN" ""
+      printf 'Cleared OC8_DOMAIN -- plain HTTP.\n'
+    fi
+  fi
+fi
+
+# --- Demo mode's password login (compose.demo.yml requires OC8_DEMO_PASSWORD).
+if [[ "$MODE" == "demo" ]]; then
+  existing_demo_password="$(env_value OC8_DEMO_PASSWORD)"
+  if [[ -z "$existing_demo_password" ]]; then
+    demo_password="${OC8_QUICKSTART_DEMO_PASSWORD:-}"
+    if [[ -z "$demo_password" ]] && is_interactive; then
+      read -r -s -p 'Demo login password (min 8 chars, leave empty to auto-generate): ' demo_password
+      printf '\n'
+    fi
+    if [[ -z "$demo_password" ]]; then
+      demo_password="$(openssl rand -base64 18)"
+      printf 'Generated demo password: %s\n' "$demo_password"
+      printf '(save this now -- it is only shown this once)\n'
+    elif [[ "${#demo_password}" -lt 8 ]]; then
+      fail "Demo password must be at least 8 characters."
+    fi
+    set_env_value "OC8_DEMO_PASSWORD" "$demo_password"
+  fi
+  demo_email="$(env_value OC8_DEMO_EMAIL)"
+  printf 'Demo sign-in address: %s\n' "${demo_email:-demo@oc8.ai}"
+fi
+
+set_env_value_if_missing "OC8_JWT_SECRET" "$(openssl rand -hex 32)"
+set_env_value_if_missing "OC8_SECRET_KEK" "$(openssl rand -base64 32 | tr -d '\n')"
+set_env_value_if_missing "POSTGRES_PASSWORD" "$(openssl rand -hex 24)"
+set_env_value_if_missing "OC8_SANDBOX_PROVISIONER_TOKEN" "$(openssl rand -hex 32)"
+set_env_value_if_missing "OC8_CONTAINER_RUNTIME" "$CONTAINER_RUNTIME"
+
+if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
+  podman_socket="$(podman info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null || true)"
+  [[ -n "$podman_socket" ]] || fail "Could not determine the Podman API socket path (podman info --format failed)."
+  set_env_value_if_missing "OC8_CONTAINER_SOCKET" "$podman_socket"
+fi
+
+printf '\nBuilding and starting oc8 (%s mode)…\n' "$MODE"
+if [[ "$CONTAINER_RUNTIME" == "docker" ]]; then
+  docker compose "${COMPOSE_FILES[@]}" up -d --build
+else
+  "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" up -d --build
+fi
+
+domain_in_env="$(env_value OC8_DOMAIN)"
+if [[ -n "$domain_in_env" ]]; then
+  url="https://${domain_in_env}"
+else
+  port_mapping="$(env_value OC8_HTTP_PORT)"
+  port_mapping="${port_mapping:-80}"
+  if [[ "$port_mapping" == *:* ]]; then
+    host="${port_mapping%:*}"
+    port="${port_mapping##*:}"
+    # `0.0.0.0` is a listen address, not an address a local browser can request.
+    [[ "$host" == "0.0.0.0" || "$host" == "::" ]] && host="127.0.0.1"
+    url="http://${host}:${port}"
+  else
+    url="http://localhost"
+    [[ "$port_mapping" != "80" ]] && url="${url}:${port_mapping}"
+  fi
+fi
+
+printf '\nWaiting for %s/health …\n' "$url"
+if command -v curl >/dev/null 2>&1; then
+  ready=0
+  for _ in $(seq 1 60); do
+    if curl --silent --fail --max-time 3 "${url}/health" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$ready" -ne 1 ]]; then
+    "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" ps
+    fail "oc8 did not become healthy in time. Inspect: ${COMPOSE_CMD[*]} ${COMPOSE_FILES[*]} logs -f backend"
+  fi
+fi
+
+printf '\n✓ oc8 (%s mode) is running at %s\n' "$MODE" "$url"
+case "$MODE" in
+  community) printf 'Next: open the URL and create the local administrator account.\n' ;;
+  demo) printf 'Next: sign in as %s with the password shown above (or already in .env).\n' "${demo_email:-demo@oc8.ai}" ;;
+  dev) printf 'Next: open the URL -- dev-login signs you in as org_admin with no password.\n' ;;
+esac
+printf 'Logs: %s logs -f backend\n' "${COMPOSE_CMD[*]}"
+printf 'Stop later (keeps data): %s stop\n' "${COMPOSE_CMD[*]}"
+if [[ "$MODE" != "community" ]]; then
+  printf 'Restart later in the same mode: %s %s up -d\n' "${COMPOSE_CMD[*]}" "${COMPOSE_FILES[*]}"
+fi
+</file>
+
+<file path="docs/DEPLOY.md">
+# Deploying oc8 with Docker Compose
+
+A single `docker compose up` brings up the whole stack — Postgres/pgvector,
+Redis, the backend API plus its worker/ingestion-worker/scheduler, the built
+frontend, and a Caddy reverse proxy that is the one external origin — for
+**testing on a server**. It is not a production deployment; see *Deliberate
+limits* at the end.
+
+> **Kubernetes?** See [Helm chart](../deploy/helm/oc8/README.md) for the same stack
+> on a cluster (`deploy/helm/oc8/`).
+
+## Prerequisites
+
+- A host with **Docker** and **Compose v2** (`docker compose version`) --
+  or **Podman** (v4+, with the `podman compose` plugin) as a drop-in
+  alternative, see below.
+- **Network egress** from the host: the agent sandbox pulls its container image
+  at run time, and the images build from public registries.
+- For real agent runs the backend and worker mount the host's container-runtime
+  socket (`/var/run/docker.sock` by default), which is **root-equivalent** —
+  use a dedicated or disposable host, not one you share with anything you care
+  about.
+
+### Running on Podman instead of Docker
+
+`scripts/quickstart.sh`/`.ps1` accept `OC8_CONTAINER_RUNTIME=podman` (default
+is `docker`) to orchestrate the stack with `podman compose` instead of
+`docker compose`, and to point the `runtime-provisioner` service's socket
+mount at Podman's API socket instead of Docker's -- everything else about the
+stack, including the sandbox driver code, is unchanged. (The provisioner is
+the one service that owns the runtime socket; `backend`/`worker` talk to it
+over HTTP.)
+
+Enable Podman's API socket first:
+
+- macOS: `podman machine init && podman machine start` (the socket comes up
+  automatically with the machine).
+- Linux: `systemctl --user enable --now podman.socket`.
+
+Then run `OC8_CONTAINER_RUNTIME=podman ./scripts/quickstart.sh` (or set
+`OC8_CONTAINER_RUNTIME=podman` once in `.env` to make it the default for this
+checkout). The script fills in `OC8_CONTAINER_SOCKET` for you.
+
+Four rootless-on-Linux specifics the quickstart handles or you must set:
+
+- **Ports below 1024** cannot be published by an unprivileged podman
+  (`net.ipv4.ip_unprivileged_port_start`). Set `OC8_HTTP_PORT=8080` (and
+  `OC8_HTTPS_PORT=8443` if 443 matters) in `.env` before starting, and
+  `OC8_FRONTEND_BASE_URL=http://localhost:8080` to match.
+- **The runtime session root** defaults to `/var/lib/oc8/sessions`, which a
+  non-root user cannot create. Set `OC8_RUNTIME_SESSION_ROOT` in `.env` to an
+  absolute path you own (e.g. `~/.local/share/oc8/sessions`); compose mounts
+  it at the identical path inside the containers.
+- **Use a current podman-compose.** `podman compose` delegates to whatever
+  compose provider is installed, and distro packages can be old (Ubuntu
+  24.04 ships 1.0.6). Verified with podman 4.9 and podman-compose 1.6:
+  `python3 -m pip install --user --break-system-packages --upgrade podman-compose`.
+- **Image names are fully qualified** (`docker.io/library/redis:7-alpine`,
+  `docker.io/oven/bun:1`, ...) in every Dockerfile and compose file, because
+  Podman -- unlike Docker -- does not assume Docker Hub for a short name: on a
+  host whose `/etc/containers/registries.conf` lists no
+  `unqualified-search-registries`, `FROM oven/bun:1` fails the build with
+  `short-name "oven/bun:1" did not resolve to an alias`. Keep new image
+  references qualified the same way; the alternative is a per-host
+  `unqualified-search-registries = ["docker.io"]` line, which the stack must
+  not depend on.
+
+One security difference worth knowing: **rootless Podman's socket is scoped
+to the invoking user's own containers**, not root-equivalent the way the
+Docker daemon socket is -- so the warning above applies to Docker and to
+rootful Podman, but not to rootless Podman.
+
+For local frontend-only work, run commands from the frontend workspace:
+
+```bash
+cd frontend
+npm run lint
+npm run build
+```
+
+## First bring-up
+
+```bash
+cp .env.example .env
+
+# Fill the three required secrets:
+sed -i "s|^OC8_JWT_SECRET=.*|OC8_JWT_SECRET=$(openssl rand -hex 32)|" .env
+sed -i "s|^OC8_SECRET_KEK=.*|OC8_SECRET_KEK=$(openssl rand -base64 32)|" .env
+sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(openssl rand -hex 16)|" .env
+
+# (macOS sed: use `sed -i ''` instead of `sed -i`.)
+
+docker compose up -d --build
+docker compose logs -f migrate     # watch it apply migrations, seed, then exit 0
+```
+
+The `migrate` service runs `alembic upgrade head` and, with the default
+`.env.example` values (`OC8_ENV=prod`, `OC8_SEED_ON_START=false`), nothing
+else — the instance starts empty and `POST /auth/setup` creates its first
+administrator. The API, worker, ingestion-worker and scheduler all wait for
+`migrate` to finish, so migration runs exactly once.
+
+If port 80 is taken, set `OC8_HTTP_PORT` in `.env` (e.g. `8090`) and re-up.
+
+## Verify
+
+```bash
+docker compose ps                  # migrate = exited(0); the rest running/healthy
+curl -s http://<host>/health       # -> {"status":"ok","version":"..."}
+```
+
+Then open `http://<host>/` in a browser: it lands on the Community setup
+screen, and creating the local administrator account proves the whole path
+(frontend → relative `/api/v1` → backend → Postgres) works through the single
+Caddy origin, with no CORS.
+
+For a **hosted product walkthrough** (seeded bilingual ACME data behind a real
+password login, no open `dev-login`), set `OC8_DEMO_PASSWORD` in `.env` (min 8
+chars) and bring the stack up with the demo override:
+`docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build`.
+Sign in as `OC8_DEMO_EMAIL` (default `demo@oc8.ai`) with that password. Add a
+custom domain (`OC8_DOMAIN` in `.env`) for automatic HTTPS — see the HTTPS
+section below; point DNS at the host first.
+
+For a **local hacking** stack — seeded ACME and unauthenticated `dev-login`,
+never on a reachable host — use the dev override instead:
+`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
+
+`scripts/quickstart.sh`/`.ps1` wrap all three of the above (Community, Demo,
+Dev) behind one interactive prompt — including the custom-domain question and
+the reverse-proxy question below — instead of hand-picking `-f` files and
+editing `.env`; see [Quickstart](user/quickstart.md).
+
+## Giving agents a model
+
+The app runs without a model, but an actual agent run needs one. Either:
+
+- **A cloud key** — set `OC8_ANTHROPIC_API_KEY` (or `OC8_OPENAI_API_KEY` /
+  `OC8_MISTRAL_API_KEY`) in `.env` and re-up; or
+- **Local Ollama** —
+  ```bash
+  docker compose --profile ollama up -d
+  docker compose exec ollama ollama pull mistral
+  ```
+  CPU-only Ollama is slow but works for testing. For a GPU host, add a
+  `deploy.resources.reservations.devices` block to the `ollama` service per the
+  Ollama docs.
+
+## Kubernetes (Helm)
+
+For clusters, use the chart in `deploy/helm/oc8/` (same components as Compose).
+
+```bash
+# Build and push/load images first — see deploy/helm/oc8/README.md
+export OC8_JWT_SECRET=$(openssl rand -hex 32)
+export OC8_SECRET_KEK=$(openssl rand -base64 32)
+export POSTGRES_PASSWORD=$(openssl rand -hex 16)
+
+helm upgrade --install oc8 ./deploy/helm/oc8 \
+  --namespace oc8 --create-namespace \
+  --set secrets.jwtSecret="$OC8_JWT_SECRET" \
+  --set secrets.secretKek="$OC8_SECRET_KEK" \
+  --set secrets.postgresPassword="$POSTGRES_PASSWORD"
+```
+
+Capas are not baked into the image — mount `capas/` via `backend.capas.hostPath` or a
+PVC. Agent sandboxes (Docker socket) are off by default on Kubernetes.
+
+## HTTPS
+
+For a real domain, set `OC8_DOMAIN` in `.env` (the quickstart scripts ask for
+this too) and re-up. Caddy provisions and renews a Let's Encrypt certificate
+automatically. Point the domain's DNS at the host first.
+
+### Behind your own reverse proxy
+
+If another proxy on the host (nginx, Traefik, another Caddy) already owns
+the domain and its TLS certificate, oc8's own Caddy must not also try to
+bind `:80`/`:443` or provision one. Set `OC8_HTTP_PORT=127.0.0.1:<port>` and
+leave `OC8_DOMAIN` empty, then point your proxy's upstream at that
+`127.0.0.1:<port>` over plain HTTP. Set `OC8_FRONTEND_BASE_URL` to the
+externally visible `https://...` URL your proxy serves this under, so
+generated links (e.g. password-reset emails) resolve correctly.
+
+## Enabling the audit MAC (advanced, off by default)
+
+`OC8_AUDIT_MAC_ENABLED` keys the audit hash chain. It is **off by default** and
+not part of a normal bring-up. Before enabling it, understand that this is a
+one-way door: once a tenant is keyed, a rollback to a build without the setting
+stops writes, and turning the flag on over an existing chain requires
+`docker compose run --rm backend oc8 audit-adopt-checkpoints` followed by a full
+verify.
+
+## Pruning run evidence (off by default)
+
+Every agent run leaves a session folder on disk — the transcript, the standing
+instructions it was given, its session state. That is the *evidence* half of the
+audit trail: what answers **why** an agent did something, as opposed to
+the ledger, which answers **what** it did. Nothing prunes it, and it is far
+larger than the ledger. Measured on the dev box: 134 MB for 406 runs, growing
+with every run.
+
+`OC8_EVIDENCE_SWEEP_ENABLED=true` turns on a sweep (worker housekeeping timer,
+or `docker compose run --rm backend oc8 evidence-sweep` by hand) that, for each
+finished run past `OC8_EVIDENCE_ARCHIVE_AFTER_MINUTES` (default 60):
+
+1. packs the folder into one `.tar.xz` under `<session root>/archive/<agent>/`,
+2. writes an `evidence.archived` entry into the tenant's audit hash chain
+   carrying the archive's SHA-256, **and commits it**,
+3. only then deletes the loose folder.
+
+Nothing is lost: the archive holds the same bytes and is readable with nothing
+but a Python standard library. What it does drop is what the container runtime
+wrote for *itself* — on the dev box that was 34 % of all bytes, mostly an
+undeliverable telemetry spool — and the ledger entry records how many bytes were
+dropped, so it is visible rather than silent.
+
+Measured on that same tree: **134 MB → 11 MB**, 6,273 files → 588, and the chain
+still verifies (`oc8 audit-verify --full --once`).
+
+`OC8_EVIDENCE_RETENTION_DAYS` is separate and defaults to **0 = never**. A
+non-zero value is the only lossy part: when an archive is older than the window
+it is replaced by an `evidence.reduced` entry naming its hash, so the proof of
+what happened survives while the ability to re-read the reasoning expires. Set
+it deliberately, not to save space you have.
+
+## Operating notes
+
+- **Logs:** `docker compose logs -f backend` (or `worker`, `scheduler`, …).
+- **Backup and restore:** follow [the pilot backup/restore runbook](PILOT_BACKUP_RESTORE.md)
+  and rehearse it before inviting pilot users.
+- **Reset data:** `docker compose down -v` drops the Postgres volume; the next
+  `up` migrates a fresh, empty instance (or re-seeds, with `OC8_SEED_ON_START=true`
+  under the dev override). Omit `-v` to keep data across restarts.
+- **Update to new code:** `git pull && docker compose up -d --build`. The
+  `migrate` service applies any new revisions before the app restarts.
+- **The four backend processes** are one image with different commands:
+  `backend` (uvicorn), `worker`, `ingestion-worker`, `scheduler`. Scale or
+  restart them independently with `docker compose restart <service>`.
+
+## Deliberate limits
+
+This stack is for testing, and skips what production needs:
+
+- **dev-login is an unauthenticated admin bypass, and it is off by default.**
+  `.env.example` ships `OC8_ENV=prod`, so `POST /api/v1/auth/dev-login` 404s
+  and the only way in is real password auth (`/auth/setup` then `/auth/login`).
+  Setting `OC8_ENV=dev` (or using the `docker-compose.dev.yml` override, which
+  sets it for you) re-enables dev-login: it then mints an `org_admin` token for
+  the seed tenant for *anyone who can reach it*, and Caddy exposes it. Only do
+  that for a local demo, and never on a publicly reachable host — if you do,
+  restrict it at the network layer too (firewall, VPN, or bind the published
+  port to a private interface, e.g. `OC8_HTTP_PORT` published as
+  `127.0.0.1:8090:80` behind your own proxy).
+- **Weak internal credentials, not exposed.** The `oc8_app`/`oc8_migrate`
+  database roles use the password `oc8` (fixed by `backend/docker/init-db.sql`).
+  This is acceptable *only because* Postgres and Redis have **no port
+  mapping** in this compose — they are reachable only on the internal Docker
+  network, and Caddy is the sole exposed service. The credentials that a
+  network attacker could reach — `OC8_JWT_SECRET`, `OC8_SECRET_KEK`, the
+  Postgres superuser — are required (`:?`) and generated per the setup above,
+  never defaulted. For production you would additionally rotate the role
+  passwords.
+- The Docker-socket mount on `backend`/`worker` is **root-equivalent** on the
+  host.
+- No forced TLS (http by default), no secrets manager (secrets live in `.env`),
+  no HA, no backups, no OpenTelemetry collector (OTLP export is disabled by
+  default; point `OTEL_EXPORTER_OTLP_ENDPOINT` at a collector and set
+  `OTEL_SDK_DISABLED=false` to use it).
+- The agent sandbox pulls its image at run time and starts sibling containers on
+  the host — a standard docker-out-of-docker arrangement, fine for
+  straightforward runs but not isolated the way a production runtime would be.
+</file>
+
+<file path="docker-compose.yml">
+# Full-stack oc8 for a test server. See docs/DEPLOY.md.
+# Core: postgres, redis, migrate (one-shot), backend, worker, ingestion-worker,
+# scheduler, frontend, caddy. Optional: ollama (profile: ollama).
+#
+# Every long-running service carries `restart: unless-stopped`; only `migrate`
+# does not, because a one-shot job that has already run must not run again.
+# `unless-stopped` rather than `always` so that an operator who deliberately
+# stops a service can keep it stopped.
+#
+# It is here because of what happened without it: both workers exited on a
+# transient Redis timeout and stayed dead for 35 hours. Nothing else showed it --
+# the backend was healthy, the UI was up, Redis itself was fine again minutes
+# later -- and the only symptom was that no run executed. The worker is the sole
+# process that performs work, so it is the one that must come back by itself.
+name: oc8
+
+x-backend-image: &backend-image
+  build:
+    context: ./backend
+    dockerfile: ../Dockerfile.backend
+  image: oc8-backend:latest
+
+x-backend-env: &backend-env
+  # SECURITY: `dev` enables POST /api/v1/auth/dev-login, an UNAUTHENTICATED
+  # endpoint that mints an org_admin token for the seed tenant to ANYONE who
+  # calls it. On a host reachable from the internet that is a full auth bypass,
+  # not just a "test login". It is the default only because this stack exists to
+  # be brought up and tested quickly — so restrict the host at the network
+  # layer (firewall / VPN / bind Caddy to a private interface), OR set
+  # OC8_ENV=prod to require real password auth (POST /auth/setup /
+  # /auth/login). See docs/DEPLOY.md.
+  OC8_ENV: ${OC8_ENV:-dev}
+  # Showcase mode: bilingual ACME seed + Demo badge. Prefer compose.demo.yml
+  # (password login) or compose.dev.yml (local open login) over flipping this
+  # alone on a reachable host.
+  OC8_DEMO: ${OC8_DEMO:-false}
+  OC8_DATABASE_URL: postgresql+asyncpg://oc8_app:oc8@postgres:5432/oc8
+  OC8_MIGRATION_URL: postgresql+psycopg://oc8_migrate:oc8@postgres:5432/oc8
+  OC8_REDIS_URL: redis://redis:6379/0
+  # Bundled S3-compatible object storage (file attachments). Bundled-by-default,
+  # switchable via env: point these at any S3-compatible endpoint (AWS S3, R2,
+  # etc.) in production instead of the bundled `minio` service above.
+  OC8_S3_ENDPOINT: ${OC8_S3_ENDPOINT:-http://minio:9000}
+  OC8_S3_ACCESS_KEY: ${OC8_S3_ACCESS_KEY:-oc8-minio}
+  OC8_S3_SECRET_KEY: ${OC8_S3_SECRET_KEY:?set OC8_S3_SECRET_KEY in .env}
+  OC8_S3_BUCKET: ${OC8_S3_BUCKET:-oc8-uploads}
+  OC8_S3_REGION: ${OC8_S3_REGION:-us-east-1}
+  OC8_JWT_SECRET: ${OC8_JWT_SECRET:?set OC8_JWT_SECRET in .env}
+  OC8_SECRET_KEK: ${OC8_SECRET_KEK:?set OC8_SECRET_KEK in .env}
+  # Externally reachable base URL of this stack (Caddy, not the backend
+  # container's own internal port) -- used for OAuth redirect URIs and for
+  # displaying an inbound webhook trigger's URL. Unset, these silently fall
+  # back to oc8.config.Settings' dev defaults (http://localhost:8000 /
+  # :8080), neither of which is actually reachable in this compose stack.
+  OC8_OAUTH_REDIRECT_BASE_URL: ${OC8_OAUTH_REDIRECT_BASE_URL:-http://localhost}
+  OC8_FRONTEND_BASE_URL: ${OC8_FRONTEND_BASE_URL:-http://localhost}
+  # arm64 hosts only (ignored on x86_64): cryptography's vendored OpenSSL
+  # probes CPU crypto features via an `mrs` instruction at import time, which
+  # some virtualization stacks running a Linux arm64 guest under Apple's
+  # Virtualization framework (e.g. Docker Desktop on Apple Silicon) trap as
+  # Illegal Instruction instead of emulating -- crashing the container before
+  # it ever starts. `armcap=0` skips that probe and falls back to software
+  # crypto; the cost is negligible for oc8's light per-request crypto use
+  # (JWT sign/verify, small secret payloads). Real arm64 production hardware
+  # without this bug can restore hardware-accelerated crypto by overriding
+  # OC8_OPENSSL_ARMCAP in its own .env.
+  OPENSSL_armcap: ${OC8_OPENSSL_ARMCAP:-0}
+  OC8_ANTHROPIC_API_KEY: ${OC8_ANTHROPIC_API_KEY:-}
+  OC8_OPENAI_API_KEY: ${OC8_OPENAI_API_KEY:-}
+  OC8_MISTRAL_API_KEY: ${OC8_MISTRAL_API_KEY:-}
+  OC8_OLLAMA_BASE_URL: ${OC8_OLLAMA_BASE_URL:-http://ollama:11434}
+  OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+  # Plugin folders (§13). WORKDIR is /app, so this matches the ./capas
+  # bind mount on the backend and worker services below.
+  OC8_CAPAS_PATH: ${OC8_CAPAS_PATH:-/app/capas}
+  # cli_harness is a shared helper LIBRARY the coding-CLI runtime plugins
+  # (claude_code_runtime, codex_runtime, opencode_runtime) import at module
+  # level -- it has no plugin.toml of its own and is never pip-installed,
+  # only ever put on sys.path (see backend/pyproject.toml's identical
+  # mypy_path/pythonpath entries for the same reason at dev-tooling time).
+  # Without this, `from cli_harness.dirs import ...` raises ModuleNotFoundError
+  # the moment the backend or worker process tries to load any of those three
+  # runtime plugins, and they report as installed-but-unavailable ("plugin
+  # code is not loadable") with no indication why.
+  PYTHONPATH: /app/capas/cli_harness
+  # §8.5 agent isolation: route runs through a per-agent Docker container.
+  OC8_AGENT_ISOLATION: ${OC8_AGENT_ISOLATION:-true}
+  OC8_INTERNAL_BASE_URL: ${OC8_INTERNAL_BASE_URL:-http://backend:8099}
+  OC8_AGENT_RUNTIME_NETWORK: ${OC8_AGENT_RUNTIME_NETWORK:-oc8_agents}
+  # uid:gid the sandbox/agent containers run as (see oc8.config.Settings.sandbox_user).
+  # Empty by default -- the right value is a property of the deployment (the
+  # uid that owns OC8_RUNTIME_SESSION_ROOT on the host), not of this compose file.
+  OC8_SANDBOX_USER: ${OC8_SANDBOX_USER:-}
+  # Runtime-provisioner privilege separation: backend/worker never touch
+  # docker.sock directly (see the `runtime-provisioner` service below, the
+  # SOLE owner of that mount) -- every sandbox operation crosses the network
+  # to it instead, authenticated by a shared bearer token. `migrate` and the
+  # other one-shot/non-sandboxing processes inherit these too (harmless: they
+  # never call get_sandbox_driver()), simplest to configure in one place.
+  OC8_SANDBOX_DRIVER: provisioner
+  OC8_SANDBOX_PROVISIONER_URL: http://runtime-provisioner:8090
+  OC8_SANDBOX_PROVISIONER_TOKEN: ${OC8_SANDBOX_PROVISIONER_TOKEN:?set OC8_SANDBOX_PROVISIONER_TOKEN in .env}
+  # Container-runtime adapter: session root must resolve to the SAME absolute
+  # path on the host and inside the backend (see the backend volume mount
+  # below) because the backend hands these paths to a sibling container's
+  # bind mounts, which the docker daemon resolves on the host. The two image
+  # vars below are nanoclaw-specific and read directly by the plugin (not by
+  # core oc8.config, which stays software-neutral) -- they are still declared
+  # here so operators configure every image in one place.
+  OC8_RUNTIME_SESSION_ROOT: ${OC8_RUNTIME_SESSION_ROOT:-/var/lib/oc8/sessions}
+  # Evidence retention (§12.5.1). The sweep archives a finished run's session
+  # folder into one hash-chained tar.xz and deletes the loose tree; off by
+  # default because it deletes files. ARCHIVE_ROOT empty means
+  # <session root>/archive -- which the same volume mount below already covers,
+  # so turning the sweep on needs no new mount. RETENTION_DAYS=0 never reduces:
+  # archiving alone is lossless, and only a window makes it lossy.
+  OC8_EVIDENCE_SWEEP_ENABLED: ${OC8_EVIDENCE_SWEEP_ENABLED:-false}
+  OC8_EVIDENCE_ARCHIVE_ROOT: ${OC8_EVIDENCE_ARCHIVE_ROOT:-}
+  OC8_EVIDENCE_ARCHIVE_AFTER_MINUTES: ${OC8_EVIDENCE_ARCHIVE_AFTER_MINUTES:-60}
+  OC8_EVIDENCE_RETENTION_DAYS: ${OC8_EVIDENCE_RETENTION_DAYS:-0}
+  OC8_NANOCLAW_AGENT_IMAGE: ${OC8_NANOCLAW_AGENT_IMAGE:-nanoclaw-agent:latest}
+  OC8_CLAUDE_CODE_AGENT_IMAGE: ${OC8_CLAUDE_CODE_AGENT_IMAGE:-oc8-agent-claude-code:latest}
+  OC8_CODEX_AGENT_IMAGE: ${OC8_CODEX_AGENT_IMAGE:-oc8-agent-codex:latest}
+  OC8_OPENCODE_AGENT_IMAGE: ${OC8_OPENCODE_AGENT_IMAGE:-oc8-agent-opencode:latest}
+  OC8_NANOCLAW_PROVISIONER_IMAGE: ${OC8_NANOCLAW_PROVISIONER_IMAGE:-nanoclaw-provisioner:latest}
+  # Read-only HOST paths the agent container mounts: nanoclaw's runner source and
+  # skills tree (it mounts these rather than baking them in) plus oc8's MCP
+  # bridge. Host paths, so the plugin's own __file__ cannot supply them -- inside
+  # the backend container it reads /app/capas/..., which the daemon cannot mount.
+  OC8_NANOCLAW_RUNNER_SRC: ${OC8_NANOCLAW_RUNNER_SRC:-/opt/nanoclaw/agent-runner/src}
+  OC8_NANOCLAW_SKILLS_SRC: ${OC8_NANOCLAW_SKILLS_SRC:-/opt/nanoclaw/skills}
+  OC8_NANOCLAW_BRIDGE_SRC: ${OC8_NANOCLAW_BRIDGE_SRC:-/opt/oc8/oc8-mcp-bridge.mjs}
+
+services:
+  postgres:
+    restart: unless-stopped
+    image: docker.io/pgvector/pgvector:pg15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: oc8
+    volumes:
+      - oc8-pgdata:/var/lib/postgresql/data
+      - ./backend/docker/init-db.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d oc8"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    restart: unless-stopped
+    image: docker.io/library/redis:7-alpine
+    # Redis defaults to maxmemory 0 / noeviction, which means that once the
+    # keyspace fills EVERY write fails -- including run intake and the
+    # realtime bus, which share this instance and are not designed to fail
+    # open. Department prompt caching adds a 24h-TTL keyspace that grows with
+    # traffic, so a cap plus volatile-ttl (evict only keys that HAVE a TTL,
+    # nearest expiry first -- in practice the department cache dominates the
+    # sampled set even though OAuth state's shorter 10-minute TTL is preferred
+    # when both are candidates) leaves the TTL-less run-intake stream
+    # untouched, trading an occasional dropped login state (the user retries)
+    # for never blocking a run.
+    volumes:
+      - oc8-redis-data:/data
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-ttl"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Bundled S3-compatible object storage for file attachments (chat + agent
+  # Instructions uploads, see oc8.storage.s3). Bundled-by-default, switchable
+  # via env: point OC8_S3_ENDPOINT/OC8_S3_* at any S3-compatible endpoint
+  # (AWS S3, R2, etc.) in production instead of running this container.
+  minio:
+    restart: unless-stopped
+    # MinIO stopped publishing pullable images: Docker Hub 404s, and
+    # quay.io/minio/{minio,mc} now return 401 for anonymous pulls, which is
+    # what broke `./scripts/quickstart.sh`. Chainguard rebuilds both from
+    # source and still serves them without a login.
+    image: cgr.dev/chainguard/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${OC8_S3_ACCESS_KEY:-oc8-minio}
+      MINIO_ROOT_PASSWORD: ${OC8_S3_SECRET_KEY:?set OC8_S3_SECRET_KEY in .env}
+    volumes:
+      - oc8-miniodata:/data
+    healthcheck:
+      # Distroless: no curl. bash /dev/tcp is enough to know the API is up.
+      test: ["CMD", "/usr/bin/bash", "-c", "echo >/dev/tcp/127.0.0.1/9000"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: create the default bucket on first boot. Idempotent (`-p` /
+  # `|| true`) so a re-run against an already-provisioned bucket doesn't fail
+  # the compose run.
+  minio-init:
+    # `:latest-dev` because the slim client has no shell, and this one-shot
+    # still needs `sh -c` to set the alias then make the bucket.
+    image: cgr.dev/chainguard/minio-client:latest-dev
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      OC8_S3_ACCESS_KEY: ${OC8_S3_ACCESS_KEY:-oc8-minio}
+      OC8_S3_SECRET_KEY: ${OC8_S3_SECRET_KEY:?set OC8_S3_SECRET_KEY in .env}
+      OC8_S3_BUCKET: ${OC8_S3_BUCKET:-oc8-uploads}
+    entrypoint: ["/usr/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 "$$OC8_S3_ACCESS_KEY" "$$OC8_S3_SECRET_KEY" && \
+        mc mb -p "local/$$OC8_S3_BUCKET" || true
+    restart: "no"
+
+  # One-shot: migrate the schema, then optionally seed. App services wait for
+  # this to complete, so migration runs exactly once (not in four processes).
+  #
+  # No depends_on here on purpose: backend/worker already require migrate, and
+  # migrate requiring postgres would give those a two-level dependency chain --
+  # which podman <= 4.x refuses to start ("container ... depends on container
+  # ... not found in input list": its start-time dependency graph is one level
+  # deep). Postgres readiness is waited for in the command below instead,
+  # which also keeps the one-shot semantics self-contained.
+  migrate:
+    <<: *backend-image
+    environment:
+      <<: *backend-env
+      OC8_SEED_ON_START: ${OC8_SEED_ON_START:-true}
+      OC8_DEMO: ${OC8_DEMO:-false}
+    volumes:
+      # Seed installs/enables showcase capas when OC8_DEMO=true; discovery reads
+      # this mount the same way backend/worker do.
+      - ./capas:/app/capas:ro
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        i=0
+        until python -c "import socket; socket.create_connection(('postgres', 5432), 2)" 2>/dev/null; do
+          i=$$((i+1))
+          if [ "$$i" -ge 60 ]; then echo "postgres not reachable after 60s" >&2; exit 1; fi
+          sleep 1
+        done
+        alembic upgrade head
+        if [ "$${OC8_SEED_ON_START}" = "true" ] || [ "$${OC8_DEMO}" = "true" ]; then
+          echo "seeding…"; oc8 seed || echo "seed skipped/failed (non-fatal)"
+        fi
+    restart: "no"
+
+  # The sole owner of the container-runtime socket in the whole Community
+  # stack. backend/worker provision sandboxes over HTTP against this process
+  # instead of touching Docker (OC8_SANDBOX_DRIVER=provisioner, above) -- so a
+  # compromise of either (both run agent-authored code) never reaches raw
+  # Docker: the attacker gets, at most, the provisioner's own narrow,
+  # policy-checked API (oc8.runtime_provisioner.app / policy.py).
+  #
+  # The HOST socket path defaults to Docker's and can be pointed at Podman's
+  # user API socket via OC8_CONTAINER_SOCKET (scripts/quickstart.sh fills it
+  # in for OC8_CONTAINER_RUNTIME=podman). The container-side path and the
+  # read-only bind are constant either way. This is safe to parameterize for
+  # Podman because DEPLOY.md's root-equivalent-socket warning is about Docker
+  # (and rootful Podman): a rootless Podman socket is scoped to the invoking
+  # user's own containers, so it does not hand the provisioner more power than
+  # that user already has.
+  runtime-provisioner:
+    restart: unless-stopped
+    <<: *backend-image
+    environment:
+      <<: *backend-env
+    volumes:
+      - ${OC8_CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      # Read-only: the provisioner only needs to validate that a caller-supplied
+      # mount falls inside this root (see ProvisionerPolicy._validate_mount);
+      # it never itself writes here.
+      - ${OC8_RUNTIME_SESSION_ROOT:-/var/lib/oc8/sessions}:${OC8_RUNTIME_SESSION_ROOT:-/var/lib/oc8/sessions}:ro
+    command:
+      - uvicorn
+      - oc8.runtime_provisioner.app:create_provisioner_app
+      - --factory
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8090"
+
+  backend:
+    restart: unless-stopped
+    <<: *backend-image
+    environment: *backend-env
+    networks: [default, agents]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      runtime-provisioner:
+        condition: service_started
+    volumes:
+      # Plugin folders, read-only: oc8 discovers and reads them, never writes.
+      - ./capas:/app/capas:ro
+      # Core UI translation catalogs, read-only: only `backend` serves the
+      # /api/v1/i18n/core endpoint the frontend fetches these through, so
+      # only it needs the mount -- dropping in a new locale here just needs
+      # a `backend` restart, no image rebuild.
+      - ./i18n:/app/i18n:ro
+      # runtime session root: identical absolute path on both sides is the
+      # point, not a typo -- see OC8_RUNTIME_SESSION_ROOT above.
+      - ${OC8_RUNTIME_SESSION_ROOT:-/var/lib/oc8/sessions}:${OC8_RUNTIME_SESSION_ROOT:-/var/lib/oc8/sessions}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8099/health').status==200 else 1)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    restart: unless-stopped
+    <<: *backend-image
+    environment: *backend-env
+    networks: [default, agents]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      runtime-provisioner:
+        condition: service_started
+    volumes:
+      - ./capas:/app/capas:ro
+      # runtime session root: the worker is what actually starts agent
+      # sandboxes, so it (not the backend) is what needs to see this path at
+      # the SAME absolute location the sibling container mounts it.
+      - ${OC8_RUNTIME_SESSION_ROOT:-/var/lib/oc8/sessions}:${OC8_RUNTIME_SESSION_ROOT:-/var/lib/oc8/sessions}
+    command: ["oc8", "worker"]
+    # More than one, because a worker executes runs STRICTLY SERIALLY: it
+    # dequeues one message and awaits it before taking the next. Four agents on
+    # a three-minute schedule produce ~80 runs an hour; one worker manages ~15,
+    # and the queue grows without bound. Scale this with the number of agents,
+    # not with the machine.
+    #
+    # Safe to raise only because the things two workers could race on are
+    # settled in the database rather than in a process: a run is claimed through
+    # a Redis consumer group (one message, one consumer), an agent is serialised
+    # by a row lock before its run starts, a record is claimed by a unique
+    # constraint, and liveness is a heartbeat on the run rather than a look at
+    # the local Docker daemon -- which would have declared another host's live
+    # runs dead.
+    deploy:
+      replicas: ${OC8_WORKERS:-2}
+
+  ingestion-worker:
+    restart: unless-stopped
+    <<: *backend-image
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # Same as backend/worker above: without this, every plugin-contributed
+    # knowledge connector (S3, etc.) is invisible here and sync fails with
+    # "unknown connector type" even though the plugin is installed and
+    # enabled for the tenant -- resolve_connector fails closed on an import
+    # it can never make.
+    volumes:
+      - ./capas:/app/capas:ro
+    command: ["oc8", "ingestion-worker"]
+
+  scheduler:
+    restart: unless-stopped
+    <<: *backend-image
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # Needed as of the channel-poll tick (oc8.channels.poll): unlike firing
+    # a cron Trigger, polling an approval channel has to load the owning
+    # plugin's own code (channels_for_tenant -> capas.contributions.channels_for),
+    # the same way backend/worker already do.
+    volumes:
+      - ./capas:/app/capas:ro
+    command: ["oc8", "scheduler"]
+
+  frontend:
+    restart: unless-stopped
+    build:
+      # Community frontend builds from its own allowlisted context. In
+      # particular, private enterprise/ and saas/ source must not enter its
+      # image layers or source maps.
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
+    image: oc8-frontend:latest
+    environment:
+      PORT: "3000"
+    depends_on:
+      - backend
+
+  caddy:
+    restart: unless-stopped
+    image: docker.io/library/caddy:2
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "${OC8_HTTP_PORT:-80}:80"
+      - "${OC8_HTTPS_PORT:-443}:443"
+    environment:
+      # Read by the Caddyfile itself ({$OC8_DOMAIN}). The `:80` fallback lives
+      # HERE, not in the Caddyfile: `:-` (unlike Caddy's own env-var default)
+      # substitutes it whenever OC8_DOMAIN is unset OR empty, which is what an
+      # unfilled `OC8_DOMAIN=` line in .env actually produces. Publishing 443
+      # unconditionally below is harmless when unused (Caddy simply never
+      # binds it without a domain configured).
+      OC8_DOMAIN: "${OC8_DOMAIN:-:80}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - oc8-caddy-data:/data
+      - oc8-caddy-config:/config
+
+  ollama:
+    restart: unless-stopped
+    profiles: ["ollama"]
+    image: docker.io/ollama/ollama:latest
+    volumes:
+      - oc8-ollama:/root/.ollama
+    # CPU-only by default. For GPU, add a deploy.resources.reservations.devices
+    # block per the ollama docs.
+
+networks:
+  default:
+    name: oc8
+  # Where agent containers live. `internal` means no route off the host: they can
+  # reach the control plane (which sits on both networks) and NOTHING else --
+  # not the database, not the internet. The container is meant to think and act
+  # only through oc8's two gateways, and this is what makes that structural
+  # rather than a matter of the harness behaving.
+  agents:
+    internal: true
+
+volumes:
+  oc8-pgdata:
+  oc8-caddy-data:
+  oc8-caddy-config:
+  oc8-ollama:
+  oc8-miniodata:
+  oc8-redis-data:
+</file>
+
+</files>

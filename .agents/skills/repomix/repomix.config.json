@@ -1,0 +1,26 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "ignore": {
+    "useGitignore": true,
+    "useDotIgnore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "backend/uv.lock",
+      "backend/.venv/**",
+      "frontend/node_modules/**",
+      "frontend/dist/**",
+      "frontend/src/routeTree.gen.ts",
+      "frontend/public/**",
+      "i18n/**",
+      "**/*lock*",
+      "**/*.svg",
+      "**/*.png",
+      "**/*.gif",
+      "**/*.po",
+      "backend/migrations/**",
+      "backend/tests/**",
+      "frontend/src/test/**",
+      "demo/**"
+    ]
+  }
+}
