@@ -106,5 +106,9 @@ async def discover_models(
         return await _discover_ollama(base_url or settings.ollama_base_url)
     adapter = build_adapter(canonical, settings, base_url, api_key)
     if isinstance(adapter, OpenAICompatibleAdapter):
-        return await _discover_openai_style(adapter.base_url, adapter.api_key)
+        # Use the adapter's own headers so a subscription proxy that needs
+        # more than Authorization (Grok) is asked the same way completion is.
+        headers = adapter._headers()
+        data = await _get_json(f"{adapter.base_url.rstrip('/')}/models", headers)
+        return sorted(str(item["id"]) for item in _entries(data, "data"))
     raise KeyError(canonical)

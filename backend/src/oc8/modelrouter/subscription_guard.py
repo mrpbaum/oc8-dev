@@ -51,20 +51,30 @@ from oc8 import models as m
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-#: The one credential type this guard restricts (see
-#: `oc8.credentials.core_types.CORE_CREDENTIAL_TYPES`).
+#: Credential types this guard restricts. ChatGPT remains the historical
+#: single-type name so existing imports keep working.
 SUBSCRIPTION_CREDENTIAL_TYPE = "openai_chatgpt_subscription"
+SUBSCRIPTION_CREDENTIAL_TYPES = frozenset(
+    {
+        SUBSCRIPTION_CREDENTIAL_TYPE,
+        "xai_grok_subscription",
+    }
+)
+_SUBSCRIPTION_PRODUCT = {
+    "openai_chatgpt_subscription": "ChatGPT",
+    "xai_grok_subscription": "Grok",
+}
 
 
 class SubscriptionModelNotManualOnly(Exception):
-    """Raised when a ChatGPT-subscription-backed model and an enabled
-    `Trigger` would coexist on the same agent."""
+    """Raised when a subscription-backed model and an enabled `Trigger`
+    would coexist on the same agent."""
 
-    def __init__(self) -> None:
+    def __init__(self, product: str = "ChatGPT") -> None:
         super().__init__(
             "This model -- or one of its fallback models, which the router "
             "switches to automatically when the first one fails -- signs in with "
-            "a personal ChatGPT subscription. That is licensed for manual, "
+            f"a personal {product} subscription. That is licensed for manual, "
             "human-started runs only, so it cannot be used by an agent that runs "
             "unattended, and this agent has at least one enabled trigger "
             "(schedule, event, or webhook). Disable or delete the agent's triggers "
@@ -113,20 +123,24 @@ async def _chain_configs(db: AsyncSession, model_config_id: uuid.UUID) -> list[m
     return configs
 
 
-async def _uses_subscription_credential(db: AsyncSession, configs: list[m.ModelConfig]) -> bool:
-    """True if ANY config in the chain is bound to a subscription credential."""
+async def _subscription_product(db: AsyncSession, configs: list[m.ModelConfig]) -> str | None:
+    """Product label if ANY config in the chain is bound to a subscription
+    credential, else None."""
     cred_ids = {c.credential_id for c in configs if c.credential_id is not None}
     if not cred_ids:
-        return False
+        return None
     stmt = (
-        select(m.Credential.id)
+        select(m.Credential.credential_type)
         .where(
             m.Credential.id.in_(cred_ids),
-            m.Credential.credential_type == SUBSCRIPTION_CREDENTIAL_TYPE,
+            m.Credential.credential_type.in_(SUBSCRIPTION_CREDENTIAL_TYPES),
         )
         .limit(1)
     )
-    return (await db.execute(stmt)).first() is not None
+    found = (await db.execute(stmt)).scalar_one_or_none()
+    if found is None:
+        return None
+    return _SUBSCRIPTION_PRODUCT.get(found, "subscription")
 
 
 async def _agent_has_enabled_trigger(db: AsyncSession, agent_id: uuid.UUID) -> bool:
@@ -160,22 +174,28 @@ async def assert_manual_only_compatible(
     """
     if model_config_id is None:
         return
-    if not await _uses_subscription_credential(db, await _chain_configs(db, model_config_id)):
+    product = await _subscription_product(db, await _chain_configs(db, model_config_id))
+    if product is None:
         return
     if await _agent_has_enabled_trigger(db, agent_id):
-        raise SubscriptionModelNotManualOnly
+        raise SubscriptionModelNotManualOnly(product)
 
 
-async def _is_subscription_credential(db: AsyncSession, credential_id: uuid.UUID) -> bool:
+async def _subscription_product_for_credential(
+    db: AsyncSession, credential_id: uuid.UUID
+) -> str | None:
     stmt = (
-        select(m.Credential.id)
+        select(m.Credential.credential_type)
         .where(
             m.Credential.id == credential_id,
-            m.Credential.credential_type == SUBSCRIPTION_CREDENTIAL_TYPE,
+            m.Credential.credential_type.in_(SUBSCRIPTION_CREDENTIAL_TYPES),
         )
         .limit(1)
     )
-    return (await db.execute(stmt)).first() is not None
+    found = (await db.execute(stmt)).scalar_one_or_none()
+    if found is None:
+        return None
+    return _SUBSCRIPTION_PRODUCT.get(found, "subscription")
 
 
 async def _model_ids_reaching(db: AsyncSession, model_config_id: uuid.UUID) -> set[uuid.UUID]:
@@ -236,7 +256,8 @@ async def assert_credential_bind_safe(
     """
     if credential_id is None:
         return
-    if not await _is_subscription_credential(db, credential_id):
+    product = await _subscription_product_for_credential(db, credential_id)
+    if product is None:
         return
     reaching = await _model_ids_reaching(db, model_config_id)
     stmt = (
@@ -249,4 +270,4 @@ async def assert_credential_bind_safe(
         .limit(1)
     )
     if (await db.execute(stmt)).first() is not None:
-        raise SubscriptionModelNotManualOnly
+        raise SubscriptionModelNotManualOnly(product)

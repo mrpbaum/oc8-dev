@@ -286,6 +286,38 @@ async def test_error_message_names_the_cause_and_the_two_ways_out(
     assert "fallback" in message
 
 
+async def test_grok_subscription_is_also_manual_only(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, agent_id = uuid.uuid4(), uuid.uuid4()
+    async with app_session(tenant) as db:
+        cred = await create_credential(
+            db,
+            tenant_id=tenant,
+            name=f"gk-{uuid.uuid4().hex[:8]}",
+            credential_type="xai_grok_subscription",
+            field_values={"oauth_connection_id": str(uuid.uuid4())},
+        )
+        mc = m.ModelConfig(
+            tenant_id=tenant, provider="xai_grok", model="grok-4", credential_id=cred.id
+        )
+        db.add(mc)
+        db.add(
+            m.Trigger(
+                tenant_id=tenant,
+                agent_id=agent_id,
+                kind="cron",
+                task_text="x",
+                cron_expression="0 * * * *",
+                enabled=True,
+            )
+        )
+        await db.flush()
+        with pytest.raises(SubscriptionModelNotManualOnly) as excinfo:
+            await assert_manual_only_compatible(db, agent_id=agent_id, model_config_id=mc.id)
+    assert "Grok subscription" in str(excinfo.value)
+
+
 # --- Fallback-chain coverage -------------------------------------------------
 # `complete_with_fallback` (oc8/modelrouter/fallback.py) silently falls through
 # from the primary to each ModelConfig id in `primary.fallbacks` on a retryable

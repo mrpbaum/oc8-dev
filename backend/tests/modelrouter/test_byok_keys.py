@@ -477,6 +477,44 @@ async def test_resolve_model_key_bridge_handles_missing_account_id(
         assert json.loads(key) == {"access_token": "live-token-123", "account_id": None}
 
 
+async def test_resolve_model_key_bridges_grok_subscription(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    oauth_conn_id = uuid.uuid4()
+    async with app_session(tenant) as db:
+        conn = m.OAuthConnection(
+            id=oauth_conn_id,
+            tenant_id=tenant,
+            provider="xai_grok",
+            account_label="acct_grok",
+            access_secret_ref=access_ref(oauth_conn_id),
+            grant_type="device_code",
+            client_source="tenant",
+        )
+        cred = await create_credential(
+            db,
+            tenant_id=tenant,
+            name="my grok",
+            credential_type="xai_grok_subscription",
+            field_values={"oauth_connection_id": str(oauth_conn_id)},
+        )
+        model_config = m.ModelConfig(
+            tenant_id=tenant, provider="xai_grok", model="grok-4", credential_id=cred.id
+        )
+        db.add_all([conn, model_config])
+        await db.flush()
+
+        with patch(
+            "oc8.modelrouter.keys.get_access_token", AsyncMock(return_value="live-token-grok")
+        ) as mocked:
+            key = await resolve_model_key(
+                db, tenant_id=tenant, provider="xai_grok", credential_id=cred.id
+            )
+        assert key == "live-token-grok"
+        mocked.assert_awaited_once_with(db, tenant_id=tenant, connection_id=oauth_conn_id)
+
+
 async def test_base_url_also_honors_credential_id(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:

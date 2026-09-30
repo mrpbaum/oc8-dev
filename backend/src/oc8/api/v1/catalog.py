@@ -26,12 +26,14 @@ from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_credential_bind_safe,
 )
+from oc8.oauth import xai_device_flow
 from oc8.oauth.device_flow import poll_device_login, start_device_login
 from oc8.oauth.errors import OAuthExchangeFailed
 from oc8.oauth.tokens import (
     access_ref,
     expiry_from,
     extract_chatgpt_account_id,
+    extract_id_token_string,
     persist_tokens,
     refresh_ref,
 )
@@ -525,9 +527,9 @@ async def _existing_chatgpt_connection(
 async def _credential_for_connection(
     db: DbSession, *, tenant_id: uuid.UUID, connection_id: uuid.UUID
 ) -> m.Credential | None:
-    """The subscription credential already pointing at this connection, if any
-    -- so a reconnect returns the SAME credential id every ModelConfig in this
-    tenant is already bound to, instead of a duplicate row nothing uses."""
+    """The ChatGPT subscription credential already pointing at this connection,
+    if any -- so a reconnect returns the SAME credential id every ModelConfig
+    in this tenant is already bound to, instead of a duplicate row nothing uses."""
     return (
         await db.execute(
             select(m.Credential)
@@ -632,6 +634,154 @@ async def poll_chatgpt_device_login(
     credential = await _credential_for_connection(
         db, tenant_id=principal.tenant_id, connection_id=conn.id
     ) or await create_chatgpt_subscription_credential(
+        db,
+        tenant_id=principal.tenant_id,
+        oauth_connection_id=conn.id,
+        account_label=conn.account_label,
+    )
+    return DeviceLoginPollDTO(status="complete", credential_id=str(credential.id), error=None)
+
+
+_UNKNOWN_GROK_ACCOUNT_LABEL = "Grok subscription"
+_GROK_PROVIDER = "xai_grok"
+_GROK_CREDENTIAL_TYPE = "xai_grok_subscription"
+
+
+async def create_grok_subscription_credential(
+    db: DbSession, *, tenant_id: uuid.UUID, oauth_connection_id: uuid.UUID, account_label: str
+) -> m.Credential:
+    return await create_credential(
+        db,
+        tenant_id=tenant_id,
+        name=await _free_credential_name(db, tenant_id=tenant_id, preferred=account_label),
+        credential_type=_GROK_CREDENTIAL_TYPE,
+        field_values={"oauth_connection_id": str(oauth_connection_id)},
+    )
+
+
+async def _existing_grok_connection(
+    db: DbSession, *, tenant_id: uuid.UUID, account_label: str
+) -> m.OAuthConnection | None:
+    return (
+        await db.execute(
+            select(m.OAuthConnection).where(
+                m.OAuthConnection.tenant_id == tenant_id,
+                m.OAuthConnection.provider == _GROK_PROVIDER,
+                m.OAuthConnection.account_label == account_label,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def _credential_for_grok_connection(
+    db: DbSession, *, tenant_id: uuid.UUID, connection_id: uuid.UUID
+) -> m.Credential | None:
+    """The Grok subscription credential already pointing at this connection.
+    Parallel to `_credential_for_connection`, not a parameterized version of it.
+    """
+    return (
+        await db.execute(
+            select(m.Credential)
+            .where(
+                m.Credential.tenant_id == tenant_id,
+                m.Credential.credential_type == _GROK_CREDENTIAL_TYPE,
+                m.Credential.field_values["oauth_connection_id"].astext == str(connection_id),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+@router.post(
+    "/models/grok-subscription/device/start",
+    response_model=DeviceLoginStartDTO,
+    dependencies=[Depends(require_permission(perm(MODEL, MANAGE)))],
+)
+async def start_grok_device_login() -> DeviceLoginStartDTO:
+    """Kicks off Sign in with a Grok subscription (RFC 8628 device-code).
+
+    Same contract as ``start_chatgpt_device_login``: no body, no persistence.
+    The secret ``device_code`` is returned as ``device_auth_id`` so the
+    existing poll DTO can echo it back.
+    """
+    try:
+        result = await xai_device_flow.start_device_login()
+    except OAuthExchangeFailed as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return DeviceLoginStartDTO(
+        device_auth_id=result.device_auth_id,
+        user_code=result.user_code,
+        verification_uri=result.verification_uri,
+        expires_in=result.expires_in,
+        interval=result.interval,
+    )
+
+
+@router.post(
+    "/models/grok-subscription/device/poll",
+    response_model=DeviceLoginPollDTO,
+    dependencies=[Depends(require_permission(perm(MODEL, MANAGE)))],
+)
+async def poll_grok_device_login(
+    body: DevicePollRequest, db: DbSession, principal: CurrentPrincipal
+) -> DeviceLoginPollDTO:
+    """One poll of a Grok device login. Stateless, same as the ChatGPT poll."""
+    if datetime.now(tz=UTC) > body.expires_at:
+        return DeviceLoginPollDTO(status="expired", credential_id=None, error=None)
+
+    result = await xai_device_flow.poll_device_login(body.device_auth_id, body.user_code)
+    if result.status != "complete":
+        return DeviceLoginPollDTO(status=result.status, credential_id=None, error=result.error)
+
+    assert result.tokens is not None
+    account_id = (
+        extract_id_token_string(result.tokens.id_token, "sub") if result.tokens.id_token else None
+    )
+    account_label = account_id or _UNKNOWN_GROK_ACCOUNT_LABEL
+
+    existing = await _existing_grok_connection(
+        db, tenant_id=principal.tenant_id, account_label=account_label
+    )
+    if existing is not None:
+        conn = existing
+        conn.status = "active"
+        conn.grant_type = "device_code"
+        conn.access_secret_ref = access_ref(conn.id)
+        if result.tokens.refresh_token:
+            conn.refresh_secret_ref = refresh_ref(conn.id)
+        if account_id:
+            conn.provider_metadata = {
+                **(conn.provider_metadata or {}),
+                "grok_account_id": account_id,
+            }
+    else:
+        conn = m.OAuthConnection(
+            tenant_id=principal.tenant_id,
+            provider=_GROK_PROVIDER,
+            account_label=account_label
+            if account_id
+            else f"{_UNKNOWN_GROK_ACCOUNT_LABEL} ({uuid.uuid4().hex[:8]})",
+            grant_type="device_code",
+            client_source="tenant",
+            status="active",
+            access_secret_ref="",
+            provider_metadata={"grok_account_id": account_id} if account_id else {},
+        )
+        db.add(conn)
+        await db.flush()
+        conn.access_secret_ref = access_ref(conn.id)
+        if result.tokens.refresh_token:
+            conn.refresh_secret_ref = refresh_ref(conn.id)
+
+    await persist_tokens(
+        db, tenant_id=principal.tenant_id, connection_id=conn.id, tokens=result.tokens
+    )
+    conn.expires_at = expiry_from(result.tokens.expires_in)
+    await db.flush()
+
+    credential = await _credential_for_grok_connection(
+        db, tenant_id=principal.tenant_id, connection_id=conn.id
+    ) or await create_grok_subscription_credential(
         db,
         tenant_id=principal.tenant_id,
         oauth_connection_id=conn.id,

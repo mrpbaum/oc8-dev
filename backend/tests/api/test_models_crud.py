@@ -41,6 +41,7 @@ async def test_list_providers_returns_every_canonical() -> None:
                 # The ChatGPT-subscription provider is listed for every tenant:
                 # it is authorised by a per-connection login, not an env key.
                 "openai_chatgpt": "cloud",
+                "xai_grok": "cloud",
                 "ollama": "local",
             }
             assert all("available" in p for p in r.json())

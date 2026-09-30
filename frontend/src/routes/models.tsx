@@ -19,6 +19,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { ChatGptSubscriptionPicker } from "@/components/chatgpt-subscription-picker";
+import { GrokSubscriptionPicker } from "@/components/grok-subscription-picker";
 import { CredentialPicker } from "@/components/credential-picker";
 import {
   extraToPairs,
@@ -63,17 +64,19 @@ interface ProviderGroup {
   configs: ModelDTO[];
 }
 
-// The one provider whose credential is a personal ChatGPT subscription (an
-// OAuth device-code login) instead of an API key -- see
-// `ChatGptSubscriptionPicker`'s doc comment. `ModelDTO` doesn't carry
-// `credentialType`, only `credentialId` -- but this provider is ALWAYS
-// subscription-based by construction (Task 7 only ever wires this canonical
-// name to that one credential type), so every render site (the models table,
-// ProviderCard, the wizard's step-1 tile list, and the agent detail page's
-// Assigned-LLM panel) gates on `provider === SUBSCRIPTION_PROVIDER`, never on
-// a credential-type lookup. Exported for that last one, which lives in
-// `routes/agents.$id.tsx`.
+// Personal-subscription providers whose credential is a device-code login
+// rather than an API key. `ModelDTO` doesn't carry `credentialType`, only
+// `credentialId` -- these canonicals are ALWAYS subscription-based by
+// construction. Render sites (models table, ProviderCard, wizard step 1,
+// agent Assigned-LLM) gate on `isSubscriptionProvider`, never a credential-
+// type lookup. `SUBSCRIPTION_PROVIDER` is the historical ChatGPT-only name,
+// kept so existing imports still compile.
 export const SUBSCRIPTION_PROVIDER = "openai_chatgpt";
+export const GROK_SUBSCRIPTION_PROVIDER = "xai_grok";
+export const SUBSCRIPTION_PROVIDERS = new Set([SUBSCRIPTION_PROVIDER, GROK_SUBSCRIPTION_PROVIDER]);
+export function isSubscriptionProvider(provider: string): boolean {
+  return SUBSCRIPTION_PROVIDERS.has(provider);
+}
 
 // Every adapter merges ModelParams.extra into its outbound payload EXCEPT
 // these two (modelrouter/adapters/ollama.py + chatgpt_subscription.py each
@@ -104,8 +107,8 @@ export function SubscriptionRiskBadge() {
   return (
     <span
       title={t(
-        "Connected via a personal ChatGPT subscription — scheduled/automated runs are blocked server-side.",
-        "Verbunden über ein persönliches ChatGPT-Abo — geplante/automatisierte Läufe sind serverseitig gesperrt.",
+        "Connected via a personal subscription — scheduled/automated runs are blocked server-side.",
+        "Verbunden über ein persönliches Abo — geplante/automatisierte Läufe sind serverseitig gesperrt.",
       )}
       className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] text-[color:var(--status-warning)]"
     >
@@ -362,7 +365,7 @@ export function ModelsPage() {
                         <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
                           {m.provider}
                         </span>
-                        {m.provider === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
+                        {isSubscriptionProvider(m.provider) && <SubscriptionRiskBadge />}
                       </div>
                     </td>
                     <td className="px-5 py-4">
@@ -566,7 +569,7 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
               <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                 <KindIcon className="h-2.5 w-2.5" /> {isLocal ? "local" : "cloud"}
               </span>
-              {group.canonical === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
+              {isSubscriptionProvider(group.canonical) && <SubscriptionRiskBadge />}
             </div>
             <div className="text-[11px] text-muted-foreground">
               {agentCount} agent{agentCount === 1 ? "" : "s"} using this provider
@@ -577,7 +580,7 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
           <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
             local
           </span>
-        ) : group.available ? (
+        ) : isSubscriptionProvider(group.canonical) ? null : group.available ? (
           <span className="inline-flex items-center gap-1 rounded-full border border-[color:var(--status-running)]/40 bg-[color:var(--status-running)]/10 px-1.5 py-0.5 text-[10px] text-[color:var(--status-running)]">
             <CheckCircle2 className="h-2.5 w-2.5" /> key set
           </span>
@@ -607,7 +610,7 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
         )}
       </div>
 
-      {mayManage && !isLocal && (
+      {mayManage && !isLocal && !isSubscriptionProvider(group.canonical) && (
         <CompletionKeyPicker canonical={group.canonical} available={group.available} />
       )}
 
@@ -1401,7 +1404,7 @@ export function AddProviderWizard({
                         <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                           {isLocal ? "local" : "cloud"}
                         </span>
-                        {!isLocal && p.canonical !== SUBSCRIPTION_PROVIDER && (
+                        {!isLocal && !isSubscriptionProvider(p.canonical) && (
                           <span
                             className={cn(
                               "rounded-full border px-1.5 py-0.5 text-[10px]",
@@ -1413,7 +1416,7 @@ export function AddProviderWizard({
                             {p.available ? "key set" : "key missing"}
                           </span>
                         )}
-                        {p.canonical === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
+                        {isSubscriptionProvider(p.canonical) && <SubscriptionRiskBadge />}
                       </div>
                     </div>
                     {active && <CheckCircle2 className="mt-1 h-4 w-4 text-primary" />}
@@ -1458,7 +1461,24 @@ export function AddProviderWizard({
                   )}
                 </label>
               )}
-              {provider.locality !== "local" && provider.canonical !== SUBSCRIPTION_PROVIDER && (
+              {provider.locality !== "local" &&
+                provider.canonical === GROK_SUBSCRIPTION_PROVIDER && (
+                  <label className="block">
+                    <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                      {t("Grok account", "Grok-Konto")}
+                    </span>
+                    <GrokSubscriptionPicker value={credentialId} onChange={setCredentialId} />
+                    {!credentialId && (
+                      <p className="mt-1 text-[11px] text-[color:var(--status-warning)]">
+                        {t(
+                          "Sign in first — a model on this provider needs its own Grok account and has no shared-key fallback.",
+                          "Zuerst anmelden — ein Modell dieses Anbieters braucht ein eigenes Grok-Konto; einen gemeinsamen Schlüssel als Rückfallebene gibt es hier nicht.",
+                        )}
+                      </p>
+                    )}
+                  </label>
+                )}
+              {provider.locality !== "local" && !isSubscriptionProvider(provider.canonical) && (
                 <label className="block">
                   <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
                     {t("Credential", "Anmeldedaten")}
@@ -1588,7 +1608,9 @@ export function AddProviderWizard({
                     // still fall back to the shared platform key, so only
                     // this one blocks.
                     !modelTag.trim() ||
-                    (provider?.canonical === SUBSCRIPTION_PROVIDER && !credentialId)
+                    (provider !== null &&
+                      isSubscriptionProvider(provider.canonical) &&
+                      !credentialId)
               }
               onClick={() => setStep((s) => (s + 1) as WizardStep)}
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-40"

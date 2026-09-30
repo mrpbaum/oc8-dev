@@ -95,6 +95,41 @@ async def _bound_credential(
     ).scalar_one_or_none()
 
 
+async def _subscription_access_token(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    oauth_connection_id: object,
+    product: str,
+) -> tuple[str, uuid.UUID] | None:
+    """Live access token for a subscription credential, or None.
+
+    A missing pointer, a dead connection, or a failed refresh is the same
+    answer as a missing API key: fall through the model chain. Letting
+    ``OAuthError`` escape would tear the chain down, because
+    ``oc8.modelrouter.fallback`` calls ``resolve_model_key`` outside its
+    own try/except.
+    """
+    if not isinstance(oauth_connection_id, str) or not oauth_connection_id:
+        return None
+    try:
+        connection_id = uuid.UUID(oauth_connection_id)
+    except ValueError:
+        return None
+    try:
+        access_token = await get_access_token(db, tenant_id=tenant_id, connection_id=connection_id)
+    except OAuthError:
+        logger.warning(
+            "%s subscription connection %s cannot produce an access token; "
+            "treating this model as having no key so the fallback chain continues",
+            product,
+            connection_id,
+            exc_info=True,
+        )
+        return None
+    return access_token, connection_id
+
+
 async def resolve_model_key(
     db: AsyncSession,
     *,
@@ -113,39 +148,23 @@ async def resolve_model_key(
     )
     if row is None:
         return None
-    if row.credential_type == "openai_chatgpt_subscription":
-        # No `api_key` field on this credential type -- it is a pointer, not
-        # a secret (Task 6). Resolve the live OAuth token and pair it with
-        # the connection's account id into the composite JSON string
-        # `ChatGptSubscriptionAdapter` (Task 7) expects, and return early:
-        # this never falls through to the secret-store lookup below, which
-        # would raise `CredentialFieldNotSet` for every row of this type.
-        oauth_connection_id = row.field_values.get("oauth_connection_id")
-        if not oauth_connection_id:
+    if row.credential_type in ("openai_chatgpt_subscription", "xai_grok_subscription"):
+        # No `api_key` field on these credential types -- each is a pointer
+        # to an OAuthConnection. Resolve the live token and return early:
+        # the secret-store field lookup below raises CredentialFieldNotSet
+        # for every row of these types.
+        resolved = await _subscription_access_token(
+            db,
+            tenant_id=tenant_id,
+            oauth_connection_id=row.field_values.get("oauth_connection_id"),
+            product="Grok" if row.credential_type == "xai_grok_subscription" else "ChatGPT",
+        )
+        if resolved is None:
             return None
-        connection_id = uuid.UUID(oauth_connection_id)
-        try:
-            access_token = await get_access_token(
-                db, tenant_id=tenant_id, connection_id=connection_id
-            )
-        except OAuthError:
-            # `get_access_token` raises for a connection that is gone, marked
-            # `needs_reauth`, or whose refresh just failed -- all of which mean
-            # exactly what a missing api_key means here: no usable key. This
-            # function's whole contract is that a missing key returns None (the
-            # fallback signal), and `oc8.modelrouter.fallback` calls it OUTSIDE
-            # its own try/except, so letting this escape would tear down the
-            # entire fallback chain instead of moving on to the next model --
-            # the one credential failure mode in this function that broke the
-            # contract. Logged, not swallowed: a subscription model that stops
-            # working has to be findable from the logs.
-            logger.warning(
-                "ChatGPT subscription connection %s cannot produce an access token; "
-                "treating this model as having no key so the fallback chain continues",
-                connection_id,
-                exc_info=True,
-            )
-            return None
+        access_token, connection_id = resolved
+        if row.credential_type == "xai_grok_subscription":
+            # The Grok proxy wants the bearer token itself.
+            return access_token
         conn = await db.get(m.OAuthConnection, connection_id)
         account_id = (conn.provider_metadata or {}).get("chatgpt_account_id") if conn else None
         return json.dumps({"access_token": access_token, "account_id": account_id})

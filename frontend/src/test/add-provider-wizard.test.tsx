@@ -18,6 +18,8 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
     useDiscoverModels: () => ({ mutateAsync: vi.fn(), isPending: false }),
     useStartChatGptDeviceLogin: () => ({ mutateAsync: vi.fn(), isPending: false }),
     usePollChatGptDeviceLogin: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    useStartGrokDeviceLogin: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    usePollGrokDeviceLogin: () => ({ mutateAsync: vi.fn(), isPending: false }),
   };
 });
 
@@ -34,6 +36,7 @@ const PROVIDERS = [
   // tenant-wide key to check), which is exactly why the generic key badge
   // would lie about it.
   { canonical: "openai_chatgpt", locality: "cloud", available: true },
+  { canonical: "xai_grok", locality: "cloud", available: true },
 ];
 
 function renderWizard() {
@@ -87,9 +90,10 @@ describe("AddProviderWizard", () => {
     expect(within(tile("openai_chatgpt")).queryByText(/key set|key missing/)).toBeNull();
   });
 
-  it("shows the persistent subscription risk badge on the ChatGPT-subscription tile, and no other tile", () => {
+  it("shows the persistent subscription risk badge on subscription tiles, and no other tile", () => {
     renderWizard();
     expect(within(tile("openai_chatgpt")).getByText(/manual only/i)).toBeInTheDocument();
+    expect(within(tile("xai_grok")).getByText(/manual only/i)).toBeInTheDocument();
     expect(within(tile("anthropic")).queryByText(/manual only/i)).toBeNull();
     expect(within(tile("mistral")).queryByText(/manual only/i)).toBeNull();
     expect(within(tile("ollama")).queryByText(/manual only/i)).toBeNull();
@@ -125,6 +129,38 @@ describe("AddProviderWizard", () => {
 
     // The account select is the first combobox on the step (Locality is the
     // other one).
+    fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "c1" } });
+    expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
+  });
+
+  it("skips the misleading key badge on the Grok-subscription provider", () => {
+    renderWizard();
+    expect(within(tile("xai_grok")).queryByText(/key set|key missing/)).toBeNull();
+  });
+
+  it("offers the device-code sign-in, not the generic credential form, for xai_grok", () => {
+    renderWizard();
+    openStep2("xai_grok");
+
+    expect(screen.getByText("Grok account")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sign in with grok/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /create new/i })).not.toBeInTheDocument();
+    expect(credentialsMock).toHaveBeenCalledWith("xai_grok_subscription");
+  });
+
+  it("blocks Continue for xai_grok until an account is selected", () => {
+    credentialsMock.mockReturnValue({
+      data: [{ id: "c1", name: "user@example.com" }],
+      refetch: vi.fn(),
+    });
+    renderWizard();
+    openStep2("xai_grok");
+
+    fireEvent.change(screen.getByPlaceholderText("llama3.1:8b"), {
+      target: { value: "grok-4" },
+    });
+    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
+
     fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "c1" } });
     expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
   });

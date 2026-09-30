@@ -28,6 +28,8 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
     useDiscoverModels: () => ({ mutateAsync: vi.fn(), isPending: false }),
     useStartChatGptDeviceLogin: () => ({ mutateAsync: vi.fn(), isPending: false }),
     usePollChatGptDeviceLogin: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    useStartGrokDeviceLogin: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    usePollGrokDeviceLogin: () => ({ mutateAsync: vi.fn(), isPending: false }),
   };
 });
 

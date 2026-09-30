@@ -26,11 +26,13 @@ if TYPE_CHECKING:
 from oc8.config import Settings
 from oc8.modelrouter.adapters.anthropic import AnthropicAdapter
 from oc8.modelrouter.adapters.chatgpt_subscription import ChatGptSubscriptionAdapter
+from oc8.modelrouter.adapters.grok_subscription import GrokSubscriptionAdapter
 from oc8.modelrouter.adapters.ollama import OllamaAdapter
 from oc8.modelrouter.adapters.openai import OpenAIAdapter
 from oc8.modelrouter.adapters.openai_compatible import OpenAICompatibleAdapter
 from oc8.modelrouter.types import ModelAdapter
 from oc8.oauth.openai_chatgpt_params import CHATGPT_BACKEND_BASE_URL
+from oc8.oauth.xai_grok_params import GROK_BACKEND_BASE_URL
 
 
 class ProviderInfo(TypedDict):
@@ -81,6 +83,17 @@ _PROVIDERS: tuple[ProviderEntry, ...] = (
         # Unlike the other cloud providers there is no environment-wide key to
         # check: this one is authorised per connection by a ChatGPT login, so
         # it is offered to every tenant and the login decides whether it works.
+        lambda _s, _key: True,
+    ),
+    ProviderEntry(
+        "xai_grok",
+        ("grok",),
+        "cloud",
+        lambda _s, b, key: GrokSubscriptionAdapter(
+            base_url=b or GROK_BACKEND_BASE_URL, api_key=key or ""
+        ),
+        # Same as openai_chatgpt: authorised per connection by a Grok login,
+        # not by a process-wide API key.
         lambda _s, _key: True,
     ),
     ProviderEntry(

@@ -92,14 +92,13 @@ class ModelRouter:
         # availability downgrade can silently route it to ollama or the platform
         # key. Checked on the REQUESTED provider, not the resolved one.
         requested = canonical_provider(req.provider) or "ollama"
-        if (
-            self._settings.require_tenant_model_key
-            and requested != "ollama"
-            and not req.api_key
-        ):
+        if self._settings.require_tenant_model_key and requested != "ollama" and not req.api_key:
+            if requested in {"openai_chatgpt", "xai_grok"}:
+                requirement = "a connected subscription login"
+            else:
+                requirement = f"a per-tenant API key (credential type '{requested}_api_key')"
             raise TenantKeyRequired(
-                f"provider '{requested}' requires a per-tenant API key "
-                f"(credential type '{requested}_api_key'); none is configured for this tenant"
+                f"provider '{requested}' requires {requirement}; none is configured for this tenant"
             )
 
         canonical, model = self.resolve(req.provider, req.model, req.api_key)
@@ -133,14 +132,11 @@ class ModelRouter:
         over = overflow_tokens(str(exc))
         if over is None:
             return None
-        trimmed = trim_for_overflow(
-            req.messages, over_by=over, headroom=req.params.max_tokens
-        )
+        trimmed = trim_for_overflow(req.messages, over_by=over, headroom=req.params.max_tokens)
         if trimmed is None:
             return None
         logger.warning(
-            "conversation was %d tokens past the context window; retrying with "
-            "%d of %d messages",
+            "conversation was %d tokens past the context window; retrying with %d of %d messages",
             over,
             len(trimmed),
             len(req.messages),

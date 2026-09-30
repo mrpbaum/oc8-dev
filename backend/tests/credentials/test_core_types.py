@@ -58,3 +58,9 @@ def test_openai_chatgpt_subscription_registered_with_no_fields() -> None:
     spec = CORE_CREDENTIAL_TYPES["openai_chatgpt_subscription"]
     assert spec.fields == []
     assert spec.display_name == "ChatGPT subscription"
+
+
+def test_xai_grok_subscription_registered_with_no_fields() -> None:
+    spec = CORE_CREDENTIAL_TYPES["xai_grok_subscription"]
+    assert spec.fields == []
+    assert spec.display_name == "Grok subscription"

@@ -90,6 +90,20 @@ def extract_chatgpt_account_id(id_token: str) -> str | None:
     return account_id if isinstance(account_id, str) else None
 
 
+def extract_id_token_string(id_token: str, claim: str) -> str | None:
+    """One string claim from an id_token, unverified.
+
+    Same trust boundary as ``extract_chatgpt_account_id``: the token is only
+    used to label the account that just signed in, never to authorize.
+    """
+    try:
+        claims = _pyjwt.decode(id_token, options={"verify_signature": False})
+    except _pyjwt.PyJWTError:
+        return None
+    value = claims.get(claim)
+    return value if isinstance(value, str) and value else None
+
+
 async def _post_token(
     provider_id: str, data: dict[str, str], *, url: str | None = None
 ) -> dict[str, object]:
@@ -251,6 +265,8 @@ async def get_access_token(
     if conn.grant_type == "client_credentials":
         return await _mint_client_credentials(db, conn)
     if conn.grant_type == "device_code":
+        if conn.provider == "xai_grok":
+            return await _refresh_xai_device_code(db, conn)
         return await _refresh_device_code(db, conn)
 
     if conn.refresh_secret_ref is None:
@@ -386,6 +402,58 @@ async def _refresh_device_code(db: AsyncSession, conn: m.OAuthConnection) -> str
         account_id = extract_chatgpt_account_id(tokens.id_token)
         if account_id:
             conn.provider_metadata = {**conn.provider_metadata, "chatgpt_account_id": account_id}
+    await db.flush()
+    return tokens.access_token
+
+
+async def _refresh_xai_device_code(db: AsyncSession, conn: m.OAuthConnection) -> str:
+    """Form-encoded refresh_token grant against xAI's token endpoint.
+
+    grok-build's ``refresh_tokens_once`` sends ``client_id`` and no secret.
+    A missing refresh token in the response means "unchanged" -- only a
+    present one is persisted.
+    """
+    from oc8.oauth.xai_grok_params import CLIENT_ID, TOKEN_URL
+
+    if conn.refresh_secret_ref is None:
+        conn.status = "needs_reauth"
+        await db.flush()
+        raise OAuthReauthRequired("no refresh token stored for this connection")
+    try:
+        refresh_token = await resolve_secret(
+            db, tenant_id=conn.tenant_id, ref=conn.refresh_secret_ref
+        )
+    except SecretNotFound:
+        conn.status = "needs_reauth"
+        await db.flush()
+        raise OAuthReauthRequired("refresh token secret missing") from None
+    async with get_client() as client:
+        resp = await client.post(
+            TOKEN_URL,
+            data={
+                "client_id": CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+        )
+    if resp.status_code >= 400:
+        body: dict[str, object] = {}
+        try:
+            body = resp.json()
+        except ValueError:
+            pass
+        if body.get("error") == "invalid_grant":
+            conn.status = "needs_reauth"
+            await db.flush()
+            raise OAuthReauthRequired("refresh token rejected by the provider")
+        raise OAuthExchangeFailed(f"refresh failed ({resp.status_code})")
+    try:
+        refreshed: dict[str, object] = resp.json()
+    except ValueError:
+        raise OAuthExchangeFailed(f"provider returned non-JSON ({resp.status_code})") from None
+    tokens = _parse(refreshed)
+    await persist_tokens(db, tenant_id=conn.tenant_id, connection_id=conn.id, tokens=tokens)
+    conn.expires_at = expiry_from(tokens.expires_in)
     await db.flush()
     return tokens.access_token
 
