@@ -3,6 +3,7 @@ from __future__ import annotations
 from oc8.config import get_settings
 from oc8.modelrouter.adapters.anthropic import AnthropicAdapter
 from oc8.modelrouter.adapters.chatgpt_subscription import ChatGptSubscriptionAdapter
+from oc8.modelrouter.adapters.grok_subscription import GrokSubscriptionAdapter
 from oc8.modelrouter.adapters.ollama import OllamaAdapter
 from oc8.modelrouter.adapters.openai import OpenAIAdapter
 from oc8.modelrouter.adapters.openai_compatible import OpenAICompatibleAdapter
@@ -13,6 +14,7 @@ from oc8.modelrouter.registry import (
     known_providers,
 )
 from oc8.oauth.openai_chatgpt_params import CHATGPT_BACKEND_BASE_URL
+from oc8.oauth.xai_grok_params import GROK_BACKEND_BASE_URL
 
 
 def test_canonical_provider_maps_aliases_case_insensitively() -> None:
@@ -23,6 +25,7 @@ def test_canonical_provider_maps_aliases_case_insensitively() -> None:
     assert canonical_provider("claude") == "anthropic"
     assert canonical_provider("gpt") == "openai"
     assert canonical_provider("mistral") == "openai_compatible"
+    assert canonical_provider("grok") == "xai_grok"
     assert canonical_provider("nope") is None  # unknown -> None (resolve() decides the fallback)
 
 
@@ -41,6 +44,7 @@ def test_known_providers_lists_every_canonical_with_locality() -> None:
         "openai": "cloud",
         "openai_compatible": "cloud",
         "openai_chatgpt": "cloud",
+        "xai_grok": "cloud",
         "ollama": "local",
     }
 
@@ -56,6 +60,25 @@ def test_openai_chatgpt_defaults_to_the_chatgpt_backend_base_url() -> None:
     adapter = build_adapter("openai_chatgpt", get_settings())
     assert isinstance(adapter, ChatGptSubscriptionAdapter)
     assert adapter.base_url == CHATGPT_BACKEND_BASE_URL
+
+
+def test_xai_grok_provider_registered() -> None:
+    assert "xai_grok" in _BY_CANONICAL
+    assert _BY_CANONICAL["xai_grok"].locality == "cloud"
+
+
+def test_xai_grok_defaults_to_the_cli_chat_proxy() -> None:
+    adapter = build_adapter("xai_grok", get_settings())
+    assert isinstance(adapter, GrokSubscriptionAdapter)
+    assert adapter.base_url == GROK_BACKEND_BASE_URL
+
+
+def test_xai_grok_is_offered_without_any_environment_key() -> None:
+    from oc8.config import Settings
+    from oc8.modelrouter.registry import provider_infos
+
+    infos = {p["canonical"]: p for p in provider_infos(Settings())}
+    assert infos["xai_grok"]["available"] is True
 
 
 def test_openai_chatgpt_is_offered_without_any_environment_key() -> None:
@@ -78,6 +101,7 @@ def test_provider_infos_marks_cloud_available_only_when_key_set() -> None:
     assert infos["anthropic"]["available"] is False  # no key
     assert infos["openai"]["available"] is False
     assert infos["openai_compatible"]["available"] is False
+    assert infos["xai_grok"]["available"] is True
     assert infos["anthropic"]["locality"] == "cloud"
 
     with_keys = Settings(anthropic_api_key="sk-a", openai_api_key="sk-o", mistral_api_key="sk-m")

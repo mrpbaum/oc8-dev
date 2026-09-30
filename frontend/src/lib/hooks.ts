@@ -1202,6 +1202,12 @@ export function useStartChatGptDeviceLogin() {
   });
 }
 
+export function useStartGrokDeviceLogin() {
+  return useMutation({
+    mutationFn: () => api.post<DeviceLoginStart>("/models/grok-subscription/device/start", {}),
+  });
+}
+
 /** One poll of a running device login. The endpoint is STATELESS -- it never
  * remembers a `deviceAuthId` between calls -- so `expiresAt` (computed
  * client-side from `device/start`'s `expiresIn`) has to be re-supplied every
@@ -1216,6 +1222,19 @@ export function usePollChatGptDeviceLogin() {
       // invalidates ["credentials"] on this path (no useCreateCredential call
       // is involved), so without this the new account would be missing from
       // every other credential list on the page until an unrelated refetch.
+      if (result.status === "complete") {
+        qc.invalidateQueries({ queryKey: ["credentials"] });
+      }
+    },
+  });
+}
+
+export function usePollGrokDeviceLogin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { deviceAuthId: string; userCode: string; expiresAt: string }) =>
+      api.post<DeviceLoginPoll>("/models/grok-subscription/device/poll", body),
+    onSuccess: (result) => {
       if (result.status === "complete") {
         qc.invalidateQueries({ queryKey: ["credentials"] });
       }

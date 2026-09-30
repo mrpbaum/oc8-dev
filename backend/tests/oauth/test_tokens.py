@@ -23,6 +23,7 @@ from oc8.oauth.tokens import (
     get_access_token,
     refresh_ref,
 )
+from oc8.oauth.xai_grok_params import TOKEN_URL as GROK_TOKEN_URL
 from oc8.secrets.service import resolve_secret, store_secret
 from tests.conftest import AppSessionFactory
 
@@ -324,6 +325,60 @@ async def test_get_access_token_refreshes_device_code_connection_and_updates_acc
         assert (await resolve_secret(db, tenant_id=tenant, ref=refresh_ref(cid))) == "rt-new"
         await db.refresh(conn)
         assert conn.provider_metadata["chatgpt_account_id"] == "acct_new"
+
+
+async def test_get_access_token_refreshes_grok_device_code_form_encoded(
+    app_session: AppSessionFactory, _transport: None
+) -> None:
+    from urllib.parse import parse_qs
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == GROK_TOKEN_URL
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "at-grok",
+                "refresh_token": "rt-grok",
+                "expires_in": 3600,
+            },
+        )
+
+    oauth_http.set_transport_override(httpx.MockTransport(handler))
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cid = uuid.uuid4()
+        conn = m.OAuthConnection(
+            id=cid,
+            tenant_id=tenant,
+            provider="xai_grok",
+            account_label="acct_grok",
+            scopes=["openid"],
+            access_secret_ref=access_ref(cid),
+            refresh_secret_ref=refresh_ref(cid),
+            grant_type="device_code",
+            client_source="tenant",
+            expires_at=datetime.now(tz=UTC) - timedelta(seconds=10),
+        )
+        db.add(conn)
+        await db.flush()
+        await store_secret(
+            db, tenant_id=tenant, name=refresh_ref(cid), value="rt-old", kind="oauth_token"
+        )
+        await db.flush()
+
+        token = await get_access_token(db, tenant_id=tenant, connection_id=conn.id)
+
+        assert token == "at-grok"
+        assert len(calls) == 1
+        sent = calls[0]
+        assert "application/x-www-form-urlencoded" in sent.headers["content-type"]
+        form = parse_qs(sent.content.decode())
+        assert form["grant_type"] == ["refresh_token"]
+        assert form["refresh_token"] == ["rt-old"]
+        assert (await resolve_secret(db, tenant_id=tenant, ref=refresh_ref(cid))) == "rt-grok"
 
 
 async def _device_code_connection(db: AsyncSession, tenant: uuid.UUID) -> m.OAuthConnection:

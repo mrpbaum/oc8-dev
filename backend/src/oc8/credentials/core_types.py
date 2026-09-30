@@ -75,6 +75,15 @@ CORE_CREDENTIAL_TYPES["openai_chatgpt_subscription"] = CredentialTypeSpec(
     fields=[],
 )
 
+# Grok subscription auth. Same shape as openai_chatgpt_subscription: no
+# typed secret, only a pointer to the OAuthConnection the device-code
+# login created. resolve_model_key reads that pointer.
+CORE_CREDENTIAL_TYPES["xai_grok_subscription"] = CredentialTypeSpec(
+    name="xai_grok_subscription",
+    display_name="Grok subscription",
+    fields=[],
+)
+
 # SMTP server (design: docs/superpowers/specs/2026-08-28-account-self-
 # service-design.md §4.1). Reuses the credentials framework unchanged for
 # a system-level integration, not a per-agent one -- nothing else in this

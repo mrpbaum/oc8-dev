@@ -142,6 +142,20 @@ describe("ProviderCard's persistent subscription risk badge", () => {
     expect(screen.getByText(/manual only/i)).toBeInTheDocument();
   });
 
+  it("shows a persistent risk badge for an xai_grok-provider tile", () => {
+    const qc = new QueryClient();
+    render(
+      <QueryClientProvider client={qc}>
+        <ProviderCard
+          group={{ canonical: "xai_grok", locality: "cloud", available: true, configs: [] }}
+          mayManage={true}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText(/manual only/i)).toBeInTheDocument();
+  });
+
   it("does not show the risk badge for an ordinary cloud provider tile", () => {
     renderCard([config()]);
 

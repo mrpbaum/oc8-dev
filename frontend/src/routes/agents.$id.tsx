@@ -76,7 +76,7 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/
 import { CredentialPicker } from "@/components/credential-picker";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { ToolGuardrailTable, describeGuardrailSaveError } from "@/components/tool-guardrail-table";
-import { SUBSCRIPTION_PROVIDER, SubscriptionRiskBadge, supportsRawParams } from "@/routes/models";
+import { isSubscriptionProvider, SubscriptionRiskBadge, supportsRawParams } from "@/routes/models";
 import {
   extraToPairs,
   pairsToExtra,
@@ -1199,7 +1199,7 @@ export function AssignedModelPanel({
           beside the select rather than inside it -- an <option> cannot hold
           markup -- and labels what THIS agent is actually assigned, which is
           the fact that matters on this page. */}
-      {assigned?.provider === SUBSCRIPTION_PROVIDER && (
+      {assigned?.provider && isSubscriptionProvider(assigned.provider) && (
         <div className="mt-3">
           <SubscriptionRiskBadge />
         </div>

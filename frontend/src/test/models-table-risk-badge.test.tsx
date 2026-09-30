@@ -84,6 +84,7 @@ describe("Models table's persistent subscription risk badge", () => {
       data: [
         model({ id: "m1", provider: "anthropic", name: "Claude" }),
         model({ id: "m2", provider: "openai_chatgpt", name: "ChatGPT Sub", model: "gpt-5" }),
+        model({ id: "m3", provider: "xai_grok", name: "Grok Sub", model: "grok-4" }),
       ],
     });
     renderPage();
@@ -91,6 +92,9 @@ describe("Models table's persistent subscription risk badge", () => {
     const row = screen.getByText("ChatGPT Sub").closest("tr");
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).getByText(/manual only/i)).toBeInTheDocument();
+    const grokRow = screen.getByText("Grok Sub").closest("tr");
+    expect(grokRow).not.toBeNull();
+    expect(within(grokRow as HTMLElement).getByText(/manual only/i)).toBeInTheDocument();
   });
 
   it("does not show the risk badge on a non-subscription model's row", () => {

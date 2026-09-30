@@ -62,6 +62,7 @@ function model(overrides: Partial<ModelDTO> = {}): ModelDTO {
 const MODELS: ModelDTO[] = [
   model({ id: "m-api", provider: "anthropic", model: "claude-3-5-sonnet" }),
   model({ id: "m-sub", provider: "openai_chatgpt", model: "gpt-5" }),
+  model({ id: "m-grok", provider: "xai_grok", model: "grok-4" }),
 ];
 
 function renderPanel(agent: AgentDetail = AGENT) {
@@ -76,6 +77,11 @@ function renderPanel(agent: AgentDetail = AGENT) {
 describe("Agent detail's persistent subscription risk badge", () => {
   it("shows the badge when the agent's assigned model is ChatGPT-subscription backed", () => {
     renderPanel();
+    expect(screen.getByText(/manual only/i)).toBeInTheDocument();
+  });
+
+  it("shows the badge when the agent's assigned model is Grok-subscription backed", () => {
+    renderPanel({ ...AGENT, modelConfigId: "m-grok", provider: "xai_grok", llm: "grok-4" });
     expect(screen.getByText(/manual only/i)).toBeInTheDocument();
   });
 
